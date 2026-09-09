@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no" ?>
+<ELAYOUT version="2.0" locked="false" name="Waffle_bulk_20mm_15nAmps_20dose">
+
+  <VERSION created="09.07.2024 11:31:56" modified="09.07.2024 11:31:56" number="1.0"/>
+
+  <AXES show="true"/>
+
+  <GRID horizontal="1" show="true" snap_to="false" vertical="1"/>
+
+  <LAYER_LIST>
+    <LAYER fill_color="#00FF00" fill_opacity="0.5" hidden="false" locked="false" name="Layer">
+        </LAYER>
+  </LAYER_LIST>
+
+  <STRUCTURE_LIST>
+    <STRUCTURE locked="false" name="Structure">
+      <VERSION created="09.07.2024 11:31:56" modified="09.07.2024 11:31:56" number="1.0"/>
+      <INSTANCE_LIST/>
+      <LAYER_REFERENCE frame_cx="0" frame_cy="0" frame_size="97.08" ref="Layer">
+        <RECT dose_factor="20" z_extent="2e-005 m" edge_sel_auto_scan_angle="true" edge_sel_marked_edge="3" height="-15" width="18.1567" angle="0 deg" x="19.5844" y="31.9496" imaging="true">
+          <EXPOSURE version="2.1" file="D:\FIB Recipes\Vitriuos_Ice.epm">
+          <PROBE name="30kV:15nA" type="specific" current="1.5e-008 A" diameter="7.5e-007 m"/>
+          </EXPOSURE>
+            </RECT>
+        <RECT dose_factor="20" z_extent="2e-005 m" area_fast="180 deg" edge_sel_auto_scan_angle="true" edge_sel_marked_edge="3" height="-15" width="18.1567" angle="180 deg" x="20.7777" y="-4.02571" imaging="true">
+          <EXPOSURE version="2.1" file="D:\FIB Recipes\Vitriuos_Ice.epm">
+          <PROBE name="30kV:15nA" type="specific" current="1.5e-008 A" diameter="7.5e-007 m"/>
+          </EXPOSURE>
+            </RECT>
+      </LAYER_REFERENCE>
+    </STRUCTURE>
+  </STRUCTURE_LIST>
+
+</ELAYOUT>

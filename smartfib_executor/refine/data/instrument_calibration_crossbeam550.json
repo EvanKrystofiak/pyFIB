@@ -1,0 +1,41 @@
+{
+  "magnification": 2000.0,
+  "image_width_px": 1024,
+  "nominal_pixel_size_m": 5.5810546875e-08,
+  "axes": {
+    "x": {
+      "axis": "x",
+      "applied_shift_m": 2e-06,
+      "dx_px": 33.695091757479844,
+      "dy_px": -0.8757357228710134,
+      "response": 1.0,
+      "response_raw": 0.9402707489941274,
+      "pixel_size_m": 5.93558258987684e-08,
+      "crosstalk_px": -0.8757357228710134,
+      "snr": 12.443199764583854,
+      "ok": true,
+      "note": ""
+    },
+    "y": {
+      "axis": "y",
+      "applied_shift_m": 2e-06,
+      "dx_px": -0.8940244904580368,
+      "dy_px": 34.81512888688777,
+      "response": 1.0,
+      "response_raw": 0.9715256913504082,
+      "pixel_size_m": 5.744629027506628e-08,
+      "crosstalk_px": -0.8940244904580368,
+      "snr": 12.55933718632708,
+      "ok": true,
+      "note": ""
+    }
+  },
+  "created_unix_s": 1786637559.7445593,
+  "note": "",
+  "derived": {
+    "beam_sign_x": -1.0,
+    "beam_sign_y": -1.0,
+    "safe_raster_side_for_positive_x_park": "left",
+    "scale_error_pct": 4.641615889769652
+  }
+}

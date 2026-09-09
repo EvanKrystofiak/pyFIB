@@ -1,0 +1,103 @@
+{
+  "schema": "smartfib_executor.positions.v2",
+  "created_unix_s": 0.0,
+  "microscope_serial": null,
+  "positions": {
+    "CLEM SAFE": {
+      "name": "CLEM SAFE",
+      "captured_unix_s": 0.0,
+      "fib_magnification_x": 2000.0,
+      "fib_objective_potential_v": 0.0,
+      "stage_at": {
+        "x_m": 0.040561,
+        "y_m": 0.057164,
+        "z_m": 0.023,
+        "r_deg": 12.0,
+        "m_m": 0.01299,
+        "t_deg": 0.0
+      },
+      "image_bmp": null,
+      "notes": "setup fixture (mm from file)"
+    },
+    "Cryo Insertion": {
+      "name": "Cryo Insertion",
+      "captured_unix_s": 0.0,
+      "fib_magnification_x": 2000.0,
+      "fib_objective_potential_v": 0.0,
+      "stage_at": {
+        "x_m": 0.043413,
+        "y_m": 0.049754,
+        "z_m": 0.028312,
+        "r_deg": 352.389,
+        "m_m": 0.0129,
+        "t_deg": 0.0
+      },
+      "image_bmp": null,
+      "notes": "setup fixture (mm from file)"
+    },
+    "Cryo Removal": {
+      "name": "Cryo Removal",
+      "captured_unix_s": 0.0,
+      "fib_magnification_x": 2000.0,
+      "fib_objective_potential_v": 0.0,
+      "stage_at": {
+        "x_m": 0.043413,
+        "y_m": 0.049858,
+        "z_m": 0.029098,
+        "r_deg": 352.389,
+        "m_m": 0.0129,
+        "t_deg": 0.0
+      },
+      "image_bmp": null,
+      "notes": "setup fixture (mm from file)"
+    },
+    "Grid1 Milling": {
+      "name": "Grid1 Milling",
+      "captured_unix_s": 0.0,
+      "fib_magnification_x": 2000.0,
+      "fib_objective_potential_v": 0.0,
+      "stage_at": {
+        "x_m": 0.044491,
+        "y_m": 0.05738,
+        "z_m": 0.0315,
+        "r_deg": 12.0,
+        "m_m": 0.01299,
+        "t_deg": 0.0
+      },
+      "image_bmp": null,
+      "notes": "setup fixture (mm from file)"
+    },
+    "Grid1 GIS Normal": {
+      "name": "Grid1 GIS Normal",
+      "captured_unix_s": 0.0,
+      "fib_magnification_x": 2000.0,
+      "fib_objective_potential_v": 0.0,
+      "stage_at": {
+        "x_m": 0.044691,
+        "y_m": 0.051183,
+        "z_m": 0.029497,
+        "r_deg": 12.0,
+        "m_m": 0.01299,
+        "t_deg": 30.0
+      },
+      "image_bmp": null,
+      "notes": "setup fixture (mm from file)"
+    },
+    "Grid2 GIS Normal": {
+      "name": "Grid2 GIS Normal",
+      "captured_unix_s": 0.0,
+      "fib_magnification_x": 2000.0,
+      "fib_objective_potential_v": 0.0,
+      "stage_at": {
+        "x_m": 0.048534,
+        "y_m": 0.051383000000000005,
+        "z_m": 0.029497,
+        "r_deg": 12.0,
+        "m_m": 0.01299,
+        "t_deg": 30.0
+      },
+      "image_bmp": null,
+      "notes": "setup fixture (mm from file)"
+    }
+  }
+}

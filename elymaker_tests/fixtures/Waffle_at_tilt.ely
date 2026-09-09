@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no" ?>
+<ELAYOUT version="2.0" locked="false" name="Waffle_at_tilt">
+
+  <VERSION created="09.07.2024 11:31:56" modified="09.07.2024 11:31:56" number="1.0"/>
+
+  <AXES show="true"/>
+
+  <GRID horizontal="1" show="true" snap_to="false" vertical="1"/>
+
+  <LAYER_LIST>
+    <LAYER fill_color="#00FF00" fill_opacity="0.5" hidden="false" locked="false" name="Layer">
+        </LAYER>
+  </LAYER_LIST>
+
+  <STRUCTURE_LIST>
+    <STRUCTURE locked="false" name="Structure">
+      <VERSION created="09.07.2024 11:31:56" modified="09.07.2024 11:31:56" number="1.0"/>
+      <INSTANCE_LIST/>
+      <LAYER_REFERENCE frame_cx="0" frame_cy="0" frame_size="47.3966" ref="Layer">
+        <ARC dose_factor="15" z_extent="1.5e-005 m" arc_dir="cw" cx="-20.1638" cy="-0.585259" r1="5.98674" r2="5.125" a1="300 deg" a2="420 deg">
+          <EXPOSURE version="2.1" file="D:\FIB Recipes\Vitriuos_Ice.epm">
+          <PROBE name="30kV:700pA" type="specific" current="7e-010 A" diameter="2.1e-007 m"/>
+          </EXPOSURE>
+            </ARC>
+        <ARC dose_factor="15" z_extent="1.5e-005 m" cx="15.8484" cy="-0.585259" r1="5.98674" r2="5.125" a1="120 deg" a2="240 deg">
+          <EXPOSURE version="2.1" file="D:\FIB Recipes\Vitriuos_Ice.epm">
+          <PROBE name="30kV:700pA" type="specific" current="7e-010 A" diameter="2.1e-007 m"/>
+          </EXPOSURE>
+            </ARC>
+        <RECT dose_factor="15" z_extent="1.5e-005 m" edge_sel_auto_scan_angle="true" height="-3.19108" width="20" angle="0 deg" x="-12.1644" y="-1.93508" imaging="false">
+          <EXPOSURE version="2.1" file="D:\FIB Recipes\Vitriuos_Ice.epm">
+          <PROBE name="30kV:1.5nA" type="specific" current="1.5e-009 A" diameter="2.4e-007 m"/>
+          </EXPOSURE>
+            </RECT>
+        <RECT dose_factor="15" z_extent="1.5e-005 m" edge_sel_auto_scan_angle="true" edge_sel_marked_edge="3" height="-3.36075" width="20" angle="0 deg" x="-12.181" y="4.5267" imaging="false">
+          <EXPOSURE version="2.1" file="D:\FIB Recipes\Vitriuos_Ice.epm">
+          <PROBE name="30kV:1.5nA" type="specific" current="1.5e-009 A" diameter="2.4e-007 m"/>
+          </EXPOSURE>
+            </RECT>
+        <RECT dose_factor="15" z_extent="1.5e-005 m" edge_sel_auto_scan_angle="true" height="-1.04018" width="16" angle="0 deg" x="-10.6797" y="-1.15758" imaging="false">
+          <EXPOSURE version="2.1" file="D:\FIB Recipes\Vitriuos_Ice.epm">
+          <PROBE name="30kV:300pA" type="specific" current="3e-010 A" diameter="1.75e-007 m"/>
+          </EXPOSURE>
+            </RECT>
+        <RECT dose_factor="15" z_extent="1.5e-005 m" edge_sel_auto_scan_angle="true" edge_sel_marked_edge="3" height="-0.939375" width="16" angle="0 deg" x="-10.3904" y="1.48985" imaging="false">
+          <EXPOSURE version="2.1" file="D:\FIB Recipes\Vitriuos_Ice.epm">
+          <PROBE name="30kV:300pA" type="specific" current="3e-010 A" diameter="1.75e-007 m"/>
+          </EXPOSURE>
+            </RECT>
+        <RECT dose_factor="15" z_extent="1.5e-005 m" edge_sel_auto_scan_angle="true" height="-0.664102" width="14" angle="0 deg" x="-9.24528" y="-0.696779" imaging="false">
+          <EXPOSURE version="2.1" file="D:\FIB Recipes\Vitriuos_Ice.epm">
+          <PROBE name="30kV:100pA" type="specific" current="1e-010 A" diameter="7e-008 m"/>
+          </EXPOSURE>
+            </RECT>
+        <RECT dose_factor="15" z_extent="1.5e-005 m" edge_sel_auto_scan_angle="true" edge_sel_marked_edge="3" height="-0.714545" width="14" angle="0 deg" x="-9.2706" y="0.794611" imaging="false">
+          <EXPOSURE version="2.1" file="D:\FIB Recipes\Vitriuos_Ice.epm">
+          <PROBE name="30kV:100pA" type="specific" current="1e-010 A" diameter="7e-008 m"/>
+          </EXPOSURE>
+            </RECT>
+        <RECT dose_factor="15" z_extent="1.5e-005 m" ignored="true" edge_sel_auto_scan_angle="true" height="-0.301316" width="13.5" angle="0 deg" x="-8.98658" y="-0.631069" imaging="false">
+          <EXPOSURE version="2.1" file="D:\FIB Recipes\Vitriuos_Ice.epm">
+          </EXPOSURE>
+            </RECT>
+      </LAYER_REFERENCE>
+    </STRUCTURE>
+  </STRUCTURE_LIST>
+
+</ELAYOUT>

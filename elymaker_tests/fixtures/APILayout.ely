@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no" ?>
+<ELAYOUT version="2.0" locked="false" name="APILayout">
+
+  <VERSION created="09.07.2024 11:31:56" modified="09.07.2024 11:31:56" number="1.0"/>
+
+  <AXES show="true"/>
+
+  <GRID horizontal="1" show="true" snap_to="false" vertical="1"/>
+
+  <LAYER_LIST>
+    <LAYER fill_color="#00FF00" fill_opacity="0.5" hidden="false" locked="false" name="Layer">
+        </LAYER>
+  </LAYER_LIST>
+
+  <STRUCTURE_LIST>
+    <STRUCTURE locked="false" name="Structure">
+      <VERSION created="09.07.2024 11:31:56" modified="09.07.2024 11:31:56" number="1.0"/>
+      <INSTANCE_LIST/>
+      <LAYER_REFERENCE frame_cx="0" frame_cy="0" frame_size="239.962" ref="Layer">
+        <TEXT dose_factor="2" z_extent="2e-006 m" height="6" text="X" font="sans serif" angle="0 deg" x="-20.3484" y="-2.28282">
+          <EXPOSURE version="2.1" file="C:\Program Files (x86)\Carl Zeiss\SmartFIB\config\1um-depth-Si.epm">
+          <PROBE name="30kV:700pA" type="specific" current="7e-010 A" diameter="2.1e-007 m"/>
+          </EXPOSURE>
+            </TEXT>
+        <POLYGON dose_factor="2" z_extent="2e-006 m" edge_sel_auto_scan_angle="true" edge_sel_marked_edge="3" points="(-13.3062 4.19145) (-13.3062 -4.12805) (-12.2646 -4.12805) (-12.2646 4.19145) " contours="0 ">
+          <EXPOSURE version="2.1" file="C:\Program Files (x86)\Carl Zeiss\SmartFIB\config\1um-depth-Si.epm">
+          <PROBE name="30kV:1.5nA" type="specific" current="1.5e-009 A" diameter="2.4e-007 m"/>
+          </EXPOSURE>
+            </POLYGON>
+        <POLYGON dose_factor="2" z_extent="2e-006 m" edge_sel_auto_scan_angle="true" points="(12.2366 3.98799) (12.2366 -4.19981) (13.2782 -4.19981) (13.2782 3.98799) " contours="0 ">
+          <EXPOSURE version="2.1" file="C:\Program Files (x86)\Carl Zeiss\SmartFIB\config\1um-depth-Si.epm">
+          <PROBE name="30kV:1.5nA" type="specific" current="1.5e-009 A" diameter="2.4e-007 m"/>
+          </EXPOSURE>
+            </POLYGON>
+        <RECT dose_factor="2" z_extent="2e-006 m" edge_sel_auto_scan_angle="true" height="-2.71" width="20" angle="0 deg" x="-9.86434" y="-1.76761" imaging="false">
+          <EXPOSURE version="2.1" file="C:\Program Files (x86)\Carl Zeiss\SmartFIB\config\1um-depth-Si.epm">
+          <PROBE name="30kV:1.5nA" type="specific" current="1.5e-009 A" diameter="2.4e-007 m"/>
+          </EXPOSURE>
+            </RECT>
+        <RECT dose_factor="2" z_extent="2e-006 m" edge_sel_auto_scan_angle="true" edge_sel_marked_edge="3" height="-2.65" width="20" angle="0 deg" x="-9.88104" y="3.98339" imaging="false">
+          <EXPOSURE version="2.1" file="C:\Program Files (x86)\Carl Zeiss\SmartFIB\config\1um-depth-Si.epm">
+          <PROBE name="30kV:1.5nA" type="specific" current="1.5e-009 A" diameter="2.4e-007 m"/>
+          </EXPOSURE>
+            </RECT>
+        <RECT dose_factor="2" z_extent="2e-006 m" edge_sel_auto_scan_angle="true" height="-1.397" width="16" angle="0 deg" x="-8.37964" y="-0.990109" imaging="false">
+          <EXPOSURE version="2.1" file="C:\Program Files (x86)\Carl Zeiss\SmartFIB\config\1um-depth-Si.epm">
+          <PROBE name="30kV:1.5nA" type="specific" current="1.5e-009 A" diameter="2.4e-007 m"/>
+          </EXPOSURE>
+            </RECT>
+        <RECT dose_factor="2" z_extent="2e-006 m" edge_sel_auto_scan_angle="true" edge_sel_marked_edge="3" height="-1.313" width="16" angle="0 deg" x="-8.09044" y="2.03099" imaging="false">
+          <EXPOSURE version="2.1" file="C:\Program Files (x86)\Carl Zeiss\SmartFIB\config\1um-depth-Si.epm">
+          <PROBE name="30kV:1.5nA" type="specific" current="1.5e-009 A" diameter="2.4e-007 m"/>
+          </EXPOSURE>
+            </RECT>
+        <RECT dose_factor="5" z_extent="5e-006 m" edge_sel_auto_scan_angle="true" height="-0.664102" width="14" angle="0 deg" x="-6.94524" y="-0.529309" imaging="false">
+          <EXPOSURE version="2.1" file="D:\FIB Recipes\Vitriuos_Ice.epm">
+          <PROBE name="30kV:300pA" type="specific" current="3e-010 A" diameter="1.75e-007 m"/>
+          </EXPOSURE>
+            </RECT>
+        <RECT dose_factor="5" z_extent="5e-006 m" edge_sel_auto_scan_angle="true" edge_sel_marked_edge="3" height="-0.714545" width="14" angle="0 deg" x="-6.97064" y="0.962091" imaging="false">
+          <EXPOSURE version="2.1" file="D:\FIB Recipes\Vitriuos_Ice.epm">
+          <PROBE name="30kV:300pA" type="specific" current="3e-010 A" diameter="1.75e-007 m"/>
+          </EXPOSURE>
+            </RECT>
+        <RECT dose_factor="5" z_extent="5e-006 m" ignored="true" edge_sel_auto_scan_angle="true" height="-0.301316" width="13.5" angle="0 deg" x="-6.68654" y="-0.463609" imaging="false">
+          <EXPOSURE version="2.1" file="D:\FIB Recipes\Vitriuos_Ice.epm">
+          </EXPOSURE>
+            </RECT>
+        <RECT dose_factor="5" z_extent="5e-006 m" ignored="true" edge_sel_auto_scan_angle="true" edge_sel_marked_edge="3" height="-0.27" width="13.5" angle="0 deg" x="-6.72224" y="0.417091" imaging="false">
+          <EXPOSURE version="2.1" file="D:\FIB Recipes\Vitriuos_Ice.epm">
+          </EXPOSURE>
+            </RECT>
+        <RECT dose_factor="5" z_extent="5e-006 m" ignored="true" edge_sel_auto_scan_angle="true" height="-0.2" width="13.3" angle="0 deg" x="-6.69324" y="-0.299809" imaging="false">
+          <EXPOSURE version="2.1" file="D:\FIB Recipes\Vitriuos_Ice.epm">
+          <PROBE name="30kV:10pA" type="specific" current="1e-011 A" diameter="2.5e-008 m"/>
+          </EXPOSURE>
+            </RECT>
+        <RECT dose_factor="5" z_extent="5e-006 m" ignored="true" edge_sel_auto_scan_angle="true" edge_sel_marked_edge="3" height="-0.2" width="13.3" angle="0 deg" x="-6.71544" y="0.270391" imaging="false">
+          <EXPOSURE version="2.1" file="D:\FIB Recipes\Vitriuos_Ice.epm">
+          <PROBE name="30kV:10pA" type="specific" current="1e-011 A" diameter="2.5e-008 m"/>
+          </EXPOSURE>
+            </RECT>
+      </LAYER_REFERENCE>
+    </STRUCTURE>
+  </STRUCTURE_LIST>
+
+</ELAYOUT>

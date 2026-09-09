@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no" ?>
+<ELAYOUT version="2.0" locked="false" name="Hinge_dose20_thickice">
+
+  <VERSION created="09.07.2024 11:31:56" modified="09.07.2024 11:31:56" number="1.0"/>
+
+  <AXES show="true"/>
+
+  <GRID horizontal="1" show="true" snap_to="false" vertical="1"/>
+
+  <LAYER_LIST>
+    <LAYER fill_color="#00FF00" fill_opacity="0.5" hidden="false" locked="false" name="Layer">
+        </LAYER>
+  </LAYER_LIST>
+
+  <STRUCTURE_LIST>
+    <STRUCTURE locked="false" name="Structure">
+      <VERSION created="09.07.2024 11:31:56" modified="09.07.2024 11:31:56" number="1.0"/>
+      <INSTANCE_LIST/>
+      <LAYER_REFERENCE frame_cx="0" frame_cy="0" frame_size="78.9757" ref="Layer">
+        <RECT dose_factor="15" z_extent="1.5e-005 m" edge_sel_auto_scan_angle="true" edge_sel_marked_edge="4" height="0.836035" width="0.2" angle="0 deg" x="-4.70782" y="-2.31748" imaging="false">
+          <EXPOSURE version="2.1" file="D:\FIB Recipes\Vitriuos_Ice.epm">
+          <PROBE name="30kV:300pA" type="specific" current="3e-010 A" diameter="1.75e-007 m"/>
+          </EXPOSURE>
+            </RECT>
+        <RECT dose_factor="15" z_extent="1.5e-005 m" edge_sel_auto_scan_angle="true" edge_sel_marked_edge="4" height="1.21044" width="0.2" angle="0 deg" x="-4.70882" y="-0.797477" imaging="false">
+          <EXPOSURE version="2.1" file="D:\FIB Recipes\Vitriuos_Ice.epm">
+          <PROBE name="30kV:300pA" type="specific" current="3e-010 A" diameter="1.75e-007 m"/>
+          </EXPOSURE>
+            </RECT>
+        <RECT dose_factor="15" z_extent="1.5e-005 m" area_fast="270 deg" edge_sel_auto_scan_angle="true" edge_sel_marked_edge="4" height="2" width="0.2" angle="270 deg" x="-5.61802" y="-2.57948" imaging="false">
+          <EXPOSURE version="2.1" file="D:\FIB Recipes\Vitriuos_Ice.epm">
+          <PROBE name="30kV:300pA" type="specific" current="3e-010 A" diameter="1.75e-007 m"/>
+          </EXPOSURE>
+            </RECT>
+        <RECT dose_factor="15" z_extent="1.5e-005 m" area_fast="270 deg" edge_sel_auto_scan_angle="true" edge_sel_marked_edge="4" height="2" width="0.2" angle="270 deg" x="-5.60632" y="-1.73948" imaging="false">
+          <EXPOSURE version="2.1" file="D:\FIB Recipes\Vitriuos_Ice.epm">
+          <PROBE name="30kV:300pA" type="specific" current="3e-010 A" diameter="1.75e-007 m"/>
+          </EXPOSURE>
+            </RECT>
+        <RECT dose_factor="15" z_extent="1.5e-005 m" edge_sel_auto_scan_angle="true" edge_sel_marked_edge="4" height="0.7" width="0.2" angle="0 deg" x="-6.50741" y="-1.51248" imaging="false">
+          <EXPOSURE version="2.1" file="D:\FIB Recipes\Vitriuos_Ice.epm">
+          <PROBE name="30kV:300pA" type="specific" current="3e-010 A" diameter="1.75e-007 m"/>
+          </EXPOSURE>
+            </RECT>
+        <RECT dose_factor="15" z_extent="1.5e-005 m" edge_sel_auto_scan_angle="true" edge_sel_marked_edge="3" height="6" width="15" angle="0 deg" x="-4.55782" y="-8.05948" imaging="true">
+          <EXPOSURE version="2.1" file="D:\FIB Recipes\Vitriuos_Ice.epm">
+          <PROBE name="30kV:1.5nA" type="specific" current="1.5e-009 A" diameter="2.4e-007 m"/>
+          </EXPOSURE>
+            </RECT>
+        <RECT dose_factor="20" z_extent="2e-005 m" edge_sel_auto_scan_angle="true" height="7" width="15" angle="0 deg" x="-4.55782" y="-0.0594761" imaging="true">
+          <EXPOSURE version="2.1" file="D:\FIB Recipes\Vitriuos_Ice.epm">
+          <PROBE name="30kV:1.5nA" type="specific" current="1.5e-009 A" diameter="2.4e-007 m"/>
+          </EXPOSURE>
+            </RECT>
+        <RECT dose_factor="20" z_extent="2e-005 m" edge_sel_auto_scan_angle="true" edge_sel_marked_edge="3" height="1.14689" width="14" angle="0 deg" x="-3.89282" y="-2.78248" imaging="false">
+          <EXPOSURE version="2.1" file="D:\FIB Recipes\Vitriuos_Ice.epm">
+          <PROBE name="30kV:700pA" type="specific" current="7e-010 A" diameter="2.1e-007 m"/>
+          </EXPOSURE>
+            </RECT>
+        <RECT dose_factor="20" z_extent="2e-005 m" edge_sel_auto_scan_angle="true" height="1.14689" width="14" angle="0 deg" x="-3.89282" y="-0.600477" imaging="false">
+          <EXPOSURE version="2.1" file="D:\FIB Recipes\Vitriuos_Ice.epm">
+          <PROBE name="30kV:700pA" type="specific" current="7e-010 A" diameter="2.1e-007 m"/>
+          </EXPOSURE>
+            </RECT>
+        <RECT dose_factor="20" z_extent="2e-005 m" edge_sel_auto_scan_angle="true" edge_sel_marked_edge="3" height="0.4" width="-13.6791" angle="0 deg" x="9.79022" y="-1.79148" imaging="false">
+          <EXPOSURE version="2.1" file="D:\FIB Recipes\Vitriuos_Ice.epm">
+          <PROBE name="30kV:300pA" type="specific" current="3e-010 A" diameter="1.75e-007 m"/>
+          </EXPOSURE>
+            </RECT>
+        <RECT dose_factor="15" z_extent="1.5e-005 m" edge_sel_auto_scan_angle="true" height="0.4" width="-13.6619" angle="0 deg" x="9.77022" y="-0.848477" imaging="false">
+          <EXPOSURE version="2.1" file="D:\FIB Recipes\Vitriuos_Ice.epm">
+          <PROBE name="30kV:300pA" type="specific" current="3e-010 A" diameter="1.75e-007 m"/>
+          </EXPOSURE>
+            </RECT>
+        <RECT dose_factor="15" z_extent="1.5e-005 m" ignored="true" edge_sel_auto_scan_angle="true" height="0.213501" width="-13.4419" angle="0 deg" x="9.55622" y="-0.974477" imaging="false">
+          <EXPOSURE version="2.1" file="D:\FIB Recipes\Vitriuos_Ice.epm">
+          <PROBE name="30kV:20pA" type="specific" current="2e-011 A" diameter="3.5e-008 m"/>
+          </EXPOSURE>
+            </RECT>
+        <RECT dose_factor="15" z_extent="1.5e-005 m" ignored="true" edge_sel_auto_scan_angle="true" edge_sel_marked_edge="3" height="0.213501" width="-13.4374" angle="0 deg" x="9.55222" y="-1.48148" imaging="false">
+          <EXPOSURE version="2.1" file="D:\FIB Recipes\Vitriuos_Ice.epm">
+          <PROBE name="30kV:20pA" type="specific" current="2e-011 A" diameter="3.5e-008 m"/>
+          </EXPOSURE>
+            </RECT>
+      </LAYER_REFERENCE>
+    </STRUCTURE>
+  </STRUCTURE_LIST>
+
+</ELAYOUT>

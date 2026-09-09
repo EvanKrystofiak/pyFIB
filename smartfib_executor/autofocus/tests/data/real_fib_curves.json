@@ -1,0 +1,66 @@
+{
+ "description": "Measured tenengrad focus curves from real Zeiss Crossbeam 550 FIB images at 2000x (Signal A = SESI). Voltage = AP_FIB_OBJECTIVE_POTENTIAL. Curves computed with databar auto-cropped and presmooth_frac applied.",
+ "presmooth_frac": 0.004,
+ "sets": {
+  "B_512x384_slow_dwell": {
+   "curve": [
+    [
+     16200,
+     51.6417
+    ],
+    [
+     16314,
+     75.2746
+    ],
+    [
+     16316,
+     75.3567
+    ],
+    [
+     16377,
+     90.1244
+    ],
+    [
+     16432,
+     94.9111
+    ],
+    [
+     16481,
+     81.9679
+    ],
+    [
+     16537,
+     63.9772
+    ]
+   ]
+  },
+  "A_1024x768_fast_dwell": {
+   "curve": [
+    [
+     16285,
+     48.1118
+    ],
+    [
+     16357,
+     54.6688
+    ],
+    [
+     16402,
+     64.3027
+    ],
+    [
+     16413,
+     67.4167
+    ],
+    [
+     16450,
+     57.937
+    ],
+    [
+     16564,
+     48.1766
+    ]
+   ]
+  }
+ }
+}
