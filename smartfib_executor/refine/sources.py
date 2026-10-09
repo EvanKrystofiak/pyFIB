@@ -69,6 +69,16 @@ class RefineScope:
     def move_stage_xy(self, x_m: float, y_m: float) -> None:
         raise NotImplementedError
 
+    def get_stage_tilt_rot(self) -> Tuple[float, float]:
+        """(tilt_deg, rot_deg) of the stage, read LIVE (the stage model is tilt-
+        dependent and valid only at the calibration rotation)."""
+        raise NotImplementedError
+
+    def ensure_magnification(self, magnification: float) -> None:
+        """Leave the instrument at this magnification (e.g. restore the fine mag after
+        a coarse pass). No-op by default."""
+        return None
+
 
 # --------------------------------------------------------------------------- #
 # Fourier sub-pixel shift (used by the simulator)
@@ -112,6 +122,8 @@ class SimulatedRefineScope(RefineScope):
         scan_rotation_deg: float = 0.0,
         report_live_pixel_size: bool = True,
         seed: int = 0,
+        stage_tilt_deg: float = 2.0,     # the stage pose the sim reports; the stage
+        stage_rot_deg: float = 12.0,     # response is modelled at this tilt
     ) -> None:
         self.magnification = float(magnification)
         self.size = size
@@ -122,11 +134,22 @@ class SimulatedRefineScope(RefineScope):
         self.add_databar = add_databar
         self.scan_rotation_deg = float(scan_rotation_deg)
         self.report_live_pixel_size = bool(report_live_pixel_size)
+        self._seed = int(seed)
         self._rng = np.random.default_rng(seed)
         self._beam = [0.0, 0.0]     # (x_m, y_m)
         self._stage = [0.0, 0.0]    # (x_m, y_m)
+        self.stage_tilt_deg = float(stage_tilt_deg)
+        self.stage_rot_deg = float(stage_rot_deg)
         self._scene = self._make_scene(size, seed)
-        self.px = pixel_size_m(self.magnification, size[1])
+        self.px = pixel_size_m(self.magnification, size[1])   # BASE (fine) pixel size
+        # Multi-mag rendering (coarse pass): a larger canvas whose CENTRE is exactly
+        # self._scene, built lazily; other mags crop + downscale it. At the base mag
+        # the original path is used unchanged (bit-identical to before).
+        self._big = None
+        self._canvas_factor = 3           # supports mags down to base/3
+        self._last_mag = self.magnification
+        self.grab_log = []                # (magnification, scan_rate) per grab
+        self.mag_set_log = []             # ensure_magnification() calls
         self.grabs = 0
 
     @staticmethod
@@ -140,10 +163,50 @@ class SimulatedRefineScope(RefineScope):
             img[cy - r:cy + r, cx - r:cx + r] = float(rng.integers(120, 240))
         return img
 
-    def reference_image(self) -> np.ndarray:
-        """The 'stored' reference: scene at zero offset / zero beam shift."""
-        img = self._scene.copy()
+    def _big_canvas(self) -> np.ndarray:
+        if self._big is None:
+            h, w = self.size
+            K = self._canvas_factor
+            rng = np.random.default_rng(self._seed + 7)     # separate stream: the base
+            big = np.full((h * K, w * K), 60.0)             # scene's RNG is untouched
+            y0, x0 = (h * K - h) // 2, (w * K - w) // 2
+            # same blob density/size outside the centre as the base scene has inside
+            for _ in range(80 * (K * K - 1)):
+                cy, cx = int(rng.integers(8, h * K - 8)), int(rng.integers(8, w * K - 8))
+                if y0 <= cy < y0 + h and x0 <= cx < x0 + w:
+                    continue
+                r = int(rng.integers(3, 9))
+                big[cy - r:cy + r, cx - r:cx + r] = float(rng.integers(120, 240))
+            big[y0:y0 + h, x0:x0 + w] = self._scene            # centre IS the base scene
+            self._big = big
+        return self._big
+
+    def _render(self, magnification: float, fy: float, fx: float) -> np.ndarray:
+        """Scene shifted by (fy, fx) BASE px, as seen at `magnification`."""
+        if abs(float(magnification) - self.magnification) < 1e-9:
+            return fourier_shift(self._scene, fy, fx)          # original path, unchanged
+        from scipy.ndimage import zoom
+        h, w = self.size
+        factor = self.magnification / float(magnification)    # >1 = wider field
+        big = fourier_shift(self._big_canvas(), fy, fx)
+        ch, cw = int(round(h * factor)), int(round(w * factor))
+        H, W = big.shape
+        y0, x0 = (H - ch) // 2, (W - cw) // 2
+        crop = big[y0:y0 + ch, x0:x0 + cw]
+        out = zoom(crop, (h / crop.shape[0], w / crop.shape[1]), order=1)
+        return out[:h, :w]
+
+    def reference_image(self, magnification: Optional[float] = None) -> np.ndarray:
+        """The 'stored' reference: scene at zero offset / zero beam shift (at the base
+        mag unless another is given, e.g. a coarse reference)."""
+        if magnification is None or abs(float(magnification) - self.magnification) < 1e-9:
+            img = self._scene.copy()
+        else:
+            img = self._render(magnification, 0.0, 0.0)
         return self._finish(img)
+
+    def ensure_magnification(self, magnification: float) -> None:
+        self.mag_set_log.append(float(magnification))
 
     def _finish(self, img: np.ndarray) -> np.ndarray:
         img = img + self._rng.normal(0, self.noise_sigma, img.shape)
@@ -158,17 +221,21 @@ class SimulatedRefineScope(RefineScope):
         return img
 
     # -- RefineScope API --------------------------------------------------
-    def grab_fib_image(self, magnification: float) -> np.ndarray:
+    def grab_fib_image(self, magnification: float, scan_rate=None) -> np.ndarray:
         self.grabs += 1
+        self.grab_log.append((float(magnification), scan_rate))
+        self._last_mag = float(magnification)
         oy, ox = self.true_offset
-        # feature position = recall offset + beam-shift contribution
+        # feature position (BASE px) = recall offset + beam-shift contribution
         fx = ox + self.beam_sign_x * self._beam[0] / self.px
         fy = oy + self.beam_sign_y * self._beam[1] / self.px
-        img = fourier_shift(self._scene, fy, fx)
+        img = self._render(magnification, fy, fx)
         return self._finish(img)
 
     def get_pixel_size_m(self) -> Optional[float]:
-        return self.px if self.report_live_pixel_size else None
+        if not self.report_live_pixel_size:
+            return None
+        return pixel_size_m(self._last_mag, self.size[1])
 
     def get_scan_rotation_deg(self) -> Optional[float]:
         return self.scan_rotation_deg
@@ -190,12 +257,18 @@ class SimulatedRefineScope(RefineScope):
         dxm = x_m - self._stage[0]
         dym = y_m - self._stage[1]
         self._stage = [float(x_m), float(y_m)]
-        # Harness convention chosen to be CONSISTENT WITH geometry.stage_correction
-        # (STAGE_SIGN_* = -1), so the enabled stage path converges in tests. This is
-        # a test assumption only: the REAL stage<->image sign/rotation is uncalibrated
-        # and stage correction stays disabled by default in refine.py.
-        self.true_offset[1] += dxm / self.px
-        self.true_offset[0] += dym / self.px
+        # Models the REAL instrument (measured 2026-09-22, 2000x, R 12, tilts 2/30):
+        #   +X stage -> image +x (response +1), scale ~0.91
+        #   +Y stage -> image -y (response -1), scale 0.946*cos(53.9 - tilt)
+        # i.e. the same signs/scale geometry.stage_correction counters, so the enabled
+        # stage path converges here exactly as it should on the column.
+        from .geometry import stage_scale
+        sx, sy = stage_scale(self.stage_tilt_deg)
+        self.true_offset[1] += sx * dxm / self.px
+        self.true_offset[0] -= sy * dym / self.px
+
+    def get_stage_tilt_rot(self) -> Tuple[float, float]:
+        return self.stage_tilt_deg, self.stage_rot_deg
 
 
 # --------------------------------------------------------------------------- #
@@ -317,8 +390,15 @@ class ScopeRefineAdapter(RefineScope):
                  grab_size: Tuple[int, int] = (1024, 768), grab_reduction: int = 0,
                  imaging_scan_rate: Optional[int] = None, scan_rate_method: str = "cmd",
                  freeze_on_end_frame: bool = True, frozen_timeout_s: float = 30.0,
+                 stage_arrival_tol_m: float = 1.0e-6, stage_arrival_timeout_s: float = 60.0,
                  dry_run: bool = False, logger=None) -> None:
         self._sem = sem
+        # Refine's X/Y moves are small (<= 100 um). With wait_stage_arrival's default
+        # 0.3 mm tolerance the START position already counts as "arrived", so a
+        # premature Idle let the next frame be grabbed mid-travel. 1 um is far above
+        # the stage's measured landing error (~3 nm on 20 um steps, 2026-09-22).
+        self.stage_arrival_tol_m = float(stage_arrival_tol_m)
+        self.stage_arrival_timeout_s = float(stage_arrival_timeout_s)
         self.settle_s = float(settle_s)
         self.frame_wait_s = float(frame_wait_s)
         self.grab_size = grab_size
@@ -330,24 +410,61 @@ class ScopeRefineAdapter(RefineScope):
         self.dry_run = bool(dry_run)
         self._log = logger or (lambda m: None)
 
-    def grab_fib_image(self, magnification: float) -> np.ndarray:
+    def _assert_magnification(self, magnification: float) -> None:
+        """Set AP_FIB_MAGNIFICATION and VERIFY it took (read back, retry once).
+
+        Milling / FIB mode switches change the mag, and a set issued before the column
+        is in FIB imaging mode may not stick -- so the caller ensures imaging mode
+        first, then this sets and reads back before every correlation frame.
+        """
+        target = float(magnification)
+        actual = None
+        for attempt in range(2):
+            self._sem.set_value("AP_FIB_MAGNIFICATION", target)
+            time.sleep(max(0.2, float(self.settle_s)))
+            try:
+                actual = float(self._sem.get_float("AP_FIB_MAGNIFICATION"))
+            except Exception:
+                actual = None
+            if actual is None:
+                self._log(f"[refine] set AP_FIB_MAGNIFICATION = {target:.6g} "
+                          f"(readback unavailable; not verified)")
+                return
+            if abs(actual - target) <= 0.01 * target:
+                if attempt:
+                    self._log(f"[refine] magnification re-asserted to {target:.6g}")
+                return
+            self._log(f"[refine] WARNING: AP_FIB_MAGNIFICATION read back {actual} "
+                      f"but wanted {target:.6g} -- re-setting.")
+        raise RuntimeError(
+            f"could not establish FIB magnification {target:.6g} (read back {actual}); "
+            f"refusing to grab at the wrong mag.")
+
+    def ensure_magnification(self, magnification: float) -> None:
+        if self.dry_run:
+            return
+        _ensure_fib_imaging(self._sem)
+        self._assert_magnification(magnification)
+
+    def grab_fib_image(self, magnification: float, scan_rate=None) -> np.ndarray:
         self._log(f"[refine] set AP_FIB_MAGNIFICATION = {float(magnification):.6g}")
-        if not self.dry_run:
-            self._sem.set_value("AP_FIB_MAGNIFICATION", float(magnification))
-            time.sleep(self.settle_s)
         if self.dry_run:
             self._log("[refine] (dry-run) would grab a FIB frame")
             return np.zeros((8, 8))
         if not _HAVE_PIL:
             raise RuntimeError("Pillow is required to read grabbed BMP images.")
 
+        # ORDER MATTERS: FIB imaging mode FIRST (SmartFIB keeps separate imaging/
+        # milling mags), THEN set + verify the mag, THEN grab.
         _ensure_fib_imaging(self._sem)
+        self._assert_magnification(magnification)
 
         # Raise the imaging dwell (scan rate) for this correlation frame to lift SNR,
         # remembering the original to restore afterwards.
         orig_rate = None
-        if self.imaging_scan_rate is not None:
-            orig_rate = _apply_scan_rate(self._sem, int(self.imaging_scan_rate),
+        rate = self.imaging_scan_rate if scan_rate is None else scan_rate
+        if rate is not None:
+            orig_rate = _apply_scan_rate(self._sem, int(rate),
                                          self.scan_rate_method, self._log)
         # Freeze at the END of a frame so a slower (higher-dwell) frame is captured
         # complete, not half-scanned.
@@ -428,17 +545,35 @@ class ScopeRefineAdapter(RefineScope):
         p = self._sem.get_stage_position()
         return (float(p.x_m), float(p.y_m))
 
-    def move_stage_xy(self, x_m: float, y_m: float) -> None:
-        # X/Y ONLY: read the current pose and change nothing else.
+    def get_stage_tilt_rot(self) -> Tuple[float, float]:
         p = self._sem.get_stage_position()
-        t = getattr(p, "t_deg", 0.0) or 0.0
-        self._log(f"[refine] move_stage X/Y -> ({x_m:.6e}, {y_m:.6e}) "
-                  f"(z/r/m/t held)")
+        return float(p.tilt_deg), float(p.rot_deg)
+
+    def move_stage_xy(self, x_m: float, y_m: float) -> None:
+        # X/Y ONLY: read the current pose and change nothing else. Field names are
+        # StagePosition's (tilt_deg / rot_deg / master_z_m). NO getattr defaults: a
+        # held axis must come from the real read-back -- a silent 0.0 fallback would
+        # COMMAND that axis to zero (the old `getattr(p, "t_deg", 0.0)` would have
+        # driven tilt to 0 on a tilted stage).
+        p = self._sem.get_stage_position()
+        z, t, r, m = (float(p.z_m), float(p.tilt_deg), float(p.rot_deg),
+                      float(p.master_z_m))
         if self.dry_run:
+            self._log(f"[refine] (dry-run) would move stage X/Y -> ({x_m:.6e}, "
+                      f"{y_m:.6e}), holding z={z:.6e} t={t:.3f} r={r:.3f} m={m:.6e}")
             return
-        self._sem.move_stage(float(x_m), float(y_m), float(p.z_m), float(t),
-                             float(p.r_deg), float(p.m_m))
+        # Log only once the full command is built, so the log never claims a move
+        # that did not happen.
+        self._log(f"[refine] move_stage X/Y -> ({x_m:.6e}, {y_m:.6e}), holding "
+                  f"z={z:.6e} t={t:.3f} r={r:.3f} m={m:.6e}")
+        self._sem.move_stage(float(x_m), float(y_m), z, t, r, m)
+        # Wait for ARRIVAL on the axes we moved (X/Y), not merely Idle -- DP_STAGE_IS
+        # reads Idle before the stage starts moving. A timeout is reported, not
+        # swallowed: correlating against a frame taken mid-travel would be wrong.
         try:
-            self._sem.wait_stage_idle()
-        except Exception:
-            pass
+            self._sem.wait_stage_arrival(x_m=float(x_m), y_m=float(y_m),
+                                         tol_m=self.stage_arrival_tol_m,
+                                         timeout_s=self.stage_arrival_timeout_s)
+        except Exception as e:
+            self._log(f"[refine] WARNING: stage did not confirm arrival at the "
+                      f"corrected X/Y: {e}")

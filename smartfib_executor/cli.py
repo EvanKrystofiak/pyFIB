@@ -12,6 +12,8 @@ from .pattern_ely import ELayoutPattern
 from .positions import PositionDatabase, capture_position, recall_position
 from .runner import PatternJob, PatternRunner
 from .smartsem_com import SmartSEM
+from .tilt_guard import (BATCH_TILT_LIMIT_DEG, TiltLimitError, plan_batch_tilts,
+                         read_live_tilt)
 
 
 def _project_root() -> Path:
@@ -151,6 +153,38 @@ def cmd_run(args: argparse.Namespace) -> int:
         else:
             sem.connect_remoting()
 
+        fib_mag = getattr(args, "fib_mag", None)
+        if fib_mag is not None and args.arm:
+            # Mill at a specific mag (e.g. the mag a following capture will use, so a
+            # fiducial lands where the reference image expects it). Imaging mode
+            # FIRST, then set + read back -- a set issued in post-milling mode does
+            # not stick (SmartFIB keeps separate imaging/milling mags).
+            target = float(fib_mag)
+            try:
+                sem.execute("CMD_FIB_MODE_FIB")
+            except Exception:
+                pass
+            ok = False
+            actual = None
+            for _ in range(2):
+                sem.set_value("AP_FIB_MAGNIFICATION", target)
+                time.sleep(0.3)
+                try:
+                    actual = float(sem.get_float("AP_FIB_MAGNIFICATION"))
+                except Exception:
+                    actual = None
+                if actual is None or abs(actual - target) <= 0.01 * target:
+                    ok = True
+                    break
+            if not ok:
+                print(f"ERROR: could not establish FIB magnification {target:g} "
+                      f"(read back {actual}); refusing to mill at the wrong mag.",
+                      file=sys.stderr)
+                return 1
+            print(f"FIB magnification set to {target:g}" +
+                  (f" (read back {actual:g})" if actual is not None else ""))
+        elif fib_mag is not None:
+            print(f"[DRY RUN] would set AP_FIB_MAGNIFICATION = {float(fib_mag):g} before milling")
         runner = PatternRunner(sem)
         runner.run(job)
 
@@ -220,8 +254,14 @@ def cmd_capture_position(args: argparse.Namespace) -> int:
             grab_reduction=int(args.reduction),
             settle_s=float(args.settle_s),
             include_tilt=bool(args.include_tilt),
+            fiducial_side=getattr(args, "fiducial_side", None),
+            fiducial_number=getattr(args, "fiducial_number", None),
             unfreeze_before_grab=not bool(getattr(args, "no_unfreeze_before_grab", False)),
             freeze_after_grab=not bool(getattr(args, "no_freeze_after_grab", False)),
+            frame_wait_s=float(getattr(args, "frame_wait_s", 3.0)),
+            frozen_timeout_s=float(getattr(args, "frozen_timeout_s", 30.0)),
+            coarse_magnification_x=getattr(args, "coarse_mag", None),
+            coarse_scan_rate=getattr(args, "coarse_scan_rate", 5),
         )
 
     # Store relative image path if possible
@@ -231,12 +271,27 @@ def cmd_capture_position(args: argparse.Namespace) -> int:
         )
     except Exception:
         pass
+    # ... and the 800x coarse reference the same way (v0.39.0; was stored absolute).
+    if rec.image_bmp_coarse:
+        try:
+            rec = rec.__class__(**{**rec.__dict__, "image_bmp_coarse": str(
+                Path(rec.image_bmp_coarse).resolve().relative_to(pos_file.parent))})
+        except Exception:
+            pass
+    # v0.51.0: re-capturing keeps the position's stage after images (mill_stages.py).
+    from .mill_stages import carry_over
+    rec = carry_over(db.positions.get(name), rec)
 
     db.upsert(rec)
     db.save(pos_file)
 
     print(f"Captured {name} -> {pos_file}")
     print(f"  Image: {rec.image_bmp}")
+    if rec.image_bmp_coarse:
+        print(f"  Coarse image ({rec.coarse_magnification_x:g}x): {rec.image_bmp_coarse}")
+    elif getattr(args, "coarse_mag", None):
+        print(f"  Coarse image: NOT captured (see the WARNING above); refine has no 800x "
+              f"fallback for this site.")
     print(f"  Stage: X={rec.stage_at.x_m:.6e} m, Y={rec.stage_at.y_m:.6e} m, Z={rec.stage_at.z_m:.6e} m, R={rec.stage_at.r_deg:.6f} deg, M={rec.stage_at.m_m:.6e} m")
     if rec.stage_at.t_deg is not None:
         print(f"  Tilt:  T={rec.stage_at.t_deg:.6f} deg")
@@ -637,31 +692,255 @@ def cmd_mill_positions(args: argparse.Namespace) -> int:
     rf_set = _resolve_flag_set(getattr(args, "refine", None),
                                getattr(args, "refine_all", False))
 
+    # v0.51.0 milling stage: which positions have the previous stage's after image.
+    from .mill_stages import (FORCED_PATTERN_STAGES, PREVIOUS_STAGE, STAGE_LABEL,
+                              STAGE_NUMBER, plan_stage)
+    stage = getattr(args, "stage", None)
+    splan = (plan_stage(db, names, stage, pos_file.parent)
+             if stage and PREVIOUS_STAGE[stage] else None)
+    ref_missing = dict(splan.missing) if splan is not None else {}
+    if stage in FORCED_PATTERN_STAGES and args.load_method != "smartfib_drop":
+        print(f"ERROR: --stage {stage} needs --load-method smartfib_drop: with "
+              f"'{args.load_method}' SmartFIB would mill whatever layout is already loaded, "
+              f"not the {STAGE_LABEL[stage]} pattern. Nothing done.")
+        return 2
+    unrefined = [n for n in names if n not in rf_set and n not in ref_missing]
+    if stage in FORCED_PATTERN_STAGES and unrefined:
+        print(f"*** WARNING: {', '.join(unrefined)} will be milled WITHOUT refine: the "
+              f"{STAGE_LABEL[stage]} pattern lands at the recalled stage position with zero "
+              f"beam shift, not on the {STAGE_LABEL[PREVIOUS_STAGE[stage]]} milling. ***")
+
+    if getattr(args, "tilt_check", False):
+        for line in (splan.lines() if splan is not None else []):
+            print(line)
+        return _tilt_check_only(args, db, [n for n in names if n not in ref_missing])
+
     if not args.arm:
         print('[DRY RUN] Would do:')
+        if stage:
+            print(f'  - Milling stage: {STAGE_LABEL[stage]}')
         print(f'  - Pattern: {ely_local}')
         print(f'  - Positions file: {pos_file}')
         print('  - Sequence:')
         for i, n in enumerate(names, start=1):
             rec = db.positions[n]
+            if n in ref_missing:
+                print(f'    {i}. {n}: SKIP -- {ref_missing[n]} (would ask before skipping it)')
+                continue
             extra = []
             if n in af_set:
                 extra.append("AUTOFOCUS")
             if n in rf_set:
                 extra.append("REFINE")
+            if splan is not None and n in rf_set:
+                extra.append(f"REFINE to {splan.references[n].name}")
+                extra.remove("REFINE")
             tag = ("  [" + "+".join(extra) + "]") if extra else ""
-            print(f'    {i}. {n}: X={rec.stage_at.x_m:.3e} m, Y={rec.stage_at.y_m:.3e} m, Z={rec.stage_at.z_m:.3e} m, R={rec.stage_at.r_deg:.3f} deg, M={rec.stage_at.m_m:.3e} m, Obj={rec.fib_objective_potential_v:.3f} V{tag}')
+            t = rec.stage_at.t_deg
+            ts = "T=--" if t is None else f"T={t:.2f} deg"
+            print(f'    {i}. {n}: X={rec.stage_at.x_m:.3e} m, Y={rec.stage_at.y_m:.3e} m, Z={rec.stage_at.z_m:.3e} m, {ts}, R={rec.stage_at.r_deg:.3f} deg, M={rec.stage_at.m_m:.3e} m, Obj={rec.fib_objective_potential_v:.3f} V{tag}')
+        if stage in FORCED_PATTERN_STAGES:
+            print(f'  - Pattern use: {ely_local.name} at EVERY position (authored rough patterns '
+                  f'are not used in {STAGE_LABEL[stage]})')
+        elif getattr(args, "force_pattern", False):
+            print('  - Pattern override: FORCED (any authored per-position pattern is bypassed)')
+        if getattr(args, "refine_enable_stage", False):
+            print('  - Refine STAGE correction: ENABLED (X/Y only, <= 100 um/axis, one move, '
+                  'R 12 / tilt -1..31 deg)')
+        if getattr(args, "record_fiducial", None):
+            print(f'  - On success: record fiducial_side = {args.record_fiducial} on the milled position(s)')
+        if _after_image_on(args):
+            nm = (f'<name>_{STAGE_NUMBER[stage]}-{stage}_<time>.bmp, recorded in positions.json'
+                  if stage else '<name>_after_<time>.bmp')
+            print(f'  - After milling each site: grab ONE FIB frame at its capture magnification '
+                  f'into {pos_file.parent / "images"} ({nm}); skipped if '
+                  f'milling is still indicated')
+        if args.move_method != "none":
+            print(f'  - Tilt limit: a position is milled only if its recorded tilt is within '
+                  f'{BATCH_TILT_LIMIT_DEG:g} deg of the current stage tilt (and of the previous '
+                  f'site). Checked against the live tilt when armed; --tilt-check shows it now.')
         print('  - For each position: move stage -> set objective -> [autofocus] -> [refine] -> load/prepare -> start milling -> wait -> next')
         if args.mode_mill and (not args.no_mode_mill):
             print('  - (Would also force CMD_FIB_MODE_MILL before each milling run)')
         return 0
 
     # ---- ARMED ----
+    # Run log (v0.40.0): <session>/runs/run_<time>.json + console copy, for the report.
+    # Created before connecting; it never raises and never changes what is milled.
+    run_log = _open_run_log(args, pos_file, db, names, ely_local, af_set, rf_set)
+    try:
+        rc = _mill_positions_armed(args, db, names, ely_local, af_set, rf_set, pos_file, run_log,
+                                   ref_missing=ref_missing)
+        if rc:
+            if run_log is not None:
+                run_log.finish("stopped", getattr(args, "_stop_reason", None)
+                               or "batch tilt check: not OKed; nothing moved")
+            return int(rc)
+    except KeyboardInterrupt:
+        if run_log is not None:
+            run_log.finish("stopped", "interrupted (Ctrl+C)")
+        raise
+    except BaseException as e:
+        if run_log is not None:
+            run_log.finish("error", f"{type(e).__name__}: {e}")
+        raise
+    if run_log is not None:
+        run_log.finish("completed")
+    print('Batch milling completed.')
+    return 0
+
+
+def _open_run_log(args, pos_file, db, names, ely_local, af_set, rf_set):
+    """RunLog for an armed mill-positions run, or None. Never raises."""
+    if getattr(args, "no_run_log", False):
+        return None
+    try:
+        from .report.runlog import RunLog
+        kind = "fiducial" if (getattr(args, "force_pattern", False)
+                              and getattr(args, "record_fiducial", None)) else "mill"
+        rl = RunLog(
+            Path(pos_file).parent, kind=kind, stage=getattr(args, "stage", None),
+            positions_file=str(pos_file),
+            standard_pattern=str(ely_local), positions=list(names),
+            microscope_serial=getattr(db, "microscope_serial", None),
+            options={
+                "move_method": args.move_method,
+                "autofocus": sorted(af_set),
+                "refine": sorted(rf_set),
+                "refine_enable_stage": bool(getattr(args, "refine_enable_stage", False)),
+                "refine_coarse_fallback": not bool(getattr(args, "no_refine_coarse_fallback", False)),
+                "force_pattern": bool(getattr(args, "force_pattern", False)),
+                "record_fiducial": getattr(args, "record_fiducial", None),
+                "continue_on_error": bool(args.continue_on_error),
+                "wait": args.wait,
+                "after_image": _after_image_on(args),
+                "stage": getattr(args, "stage", None),
+                "accept_reference_skips": sorted(_names_csv(
+                    getattr(args, "accept_reference_skips", None))),
+                "tilt_limit_deg": BATCH_TILT_LIMIT_DEG,
+                "accept_tilt_skips": sorted(_names_csv(getattr(args, "accept_tilt_skips", None))),
+            })
+        rl.start_console()
+        return rl
+    except Exception as e:  # noqa: BLE001
+        print(f"*** WARNING: run log not started ({e}); milling is unaffected. ***")
+        return None
+
+
+def _names_csv(text) -> set:
+    return {t.strip() for t in str(text or "").split(",") if t.strip()}
+
+
+def _after_image_on(args) -> bool:
+    """--after-image, or any --stage run unless --no-after-image (v0.51.0: the next stage
+    refines to it)."""
+    if getattr(args, "no_after_image", False):
+        return False
+    return bool(getattr(args, "after_image", False) or getattr(args, "stage", None))
+
+
+def _tilt_plan_for(sem, db, names):
+    """(plan, None) or (None, message). Reads AP_STAGE_AT_T only."""
+    try:
+        live = read_live_tilt(sem)
+    except TiltLimitError as e:
+        return None, str(e)
+    return plan_batch_tilts(names, {n: db.get(n).stage_at.t_deg for n in names}, live), None
+
+
+def _tilt_check_only(args, db, names) -> int:
+    """mill-positions --tilt-check: read-only. Connect, read the tilt, print, exit."""
+    if args.move_method == "none":
+        print("[tilt] --move-method none: the batch moves no stage, so no tilt check.")
+        print(f"TILT-CHECK: live=nan limit={BATCH_TILT_LIMIT_DEG:g} allowed={','.join(names)} excluded=")
+        return 0
     with SmartSEM() as sem:
         if args.connect == 'local':
             sem.connect_local(args.machine)
         else:
             sem.connect_remoting()
+        plan, err = _tilt_plan_for(sem, db, names)
+    if plan is None:
+        print(f"[tilt] {err}")
+        return 2
+    for line in plan.table_lines():
+        print(line)
+    print(plan.machine_line())
+    return 0
+
+
+def _mill_positions_armed(args, db, names, ely_local, af_set, rf_set, pos_file, run_log,
+                          ref_missing=None):
+    # v0.51.0 milling stage: positions without the previous stage's after image are not
+    # milled; that needs an OK (GUI: --accept-reference-skips; terminal: asked) BEFORE
+    # connecting, so nothing moves without it.
+    ref_missing = dict(ref_missing or {})
+    ref_ok = _names_csv(getattr(args, "accept_reference_skips", None))
+    if ref_missing:
+        from .mill_stages import PREVIOUS_STAGE, STAGE_LABEL
+        prev = STAGE_LABEL[PREVIOUS_STAGE[args.stage]]
+        for n, why in ref_missing.items():
+            print(f"[stage] {n}: will NOT be milled ({why})")
+        not_ok = [n for n in ref_missing if n not in ref_ok]
+        rest = [n for n in names if n not in ref_missing]
+        if not_ok:
+            stop = (f"missing {prev} after images not OKed to skip "
+                    f"({', '.join(not_ok)}); nothing moved")
+            if not rest:
+                args._stop_reason = stop
+                print(f"[stage] No position has a {prev} after image; nothing to mill. "
+                      f"Nothing moved.")
+                return 3
+            if sys.stdin is not None and sys.stdin.isatty():
+                ans = input(f"Mill only the {len(rest)} position(s) with a {prev} after image "
+                            f"and skip {', '.join(ref_missing)}? [y/N] ")
+                if ans.strip().lower() not in ("y", "yes"):
+                    print("[stage] Not OKed. Nothing moved.")
+                    args._stop_reason = stop
+                    return 3
+                ref_ok |= set(ref_missing)
+            else:
+                args._stop_reason = stop
+                print(f"[stage] Refusing: {', '.join(not_ok)} would not be milled (no {prev} "
+                      f"after image) and that was not OKed. Nothing moved. To mill the others, "
+                      f"add --accept-reference-skips {','.join(ref_missing)}")
+                return 3
+    tilt_names = [n for n in names if n not in ref_missing]
+    with SmartSEM() as sem:
+        if args.connect == 'local':
+            sem.connect_local(args.machine)
+        else:
+            sem.connect_remoting()
+
+        # Batch tilt limit (v0.46.0): show the plan, get an OK for any skips, BEFORE motion.
+        skip_ok = _names_csv(getattr(args, "accept_tilt_skips", None))
+        if args.move_method != "none":
+            plan, err = _tilt_plan_for(sem, db, tilt_names)
+            if plan is None:
+                print(f"[tilt] {err}")
+                return 2
+            for line in plan.table_lines():
+                print(line)
+            excluded = plan.excluded
+            missing = [n for n in excluded if n not in skip_ok]
+            if missing:
+                if not plan.allowed:
+                    print("[tilt] No position is within the tilt limit; nothing to mill. "
+                          "Nothing moved.")
+                    return 3
+                if sys.stdin is not None and sys.stdin.isatty():
+                    ans = input(f"Mill only the {len(plan.allowed)} position(s) within "
+                                f"{BATCH_TILT_LIMIT_DEG:g} deg and skip {', '.join(excluded)}? "
+                                f"[y/N] ")
+                    if ans.strip().lower() not in ("y", "yes"):
+                        print("[tilt] Not OKed. Nothing moved.")
+                        return 3
+                    skip_ok |= set(excluded)
+                else:
+                    print(f"[tilt] Refusing: {', '.join(missing)} would not be milled and that "
+                          f"was not OKed. Nothing moved. To mill the others, add "
+                          f"--accept-tilt-skips {','.join(excluded)}")
+                    return 3
 
         mill_positions_sequential(
             sem,
@@ -698,17 +977,128 @@ def cmd_mill_positions(args: argparse.Namespace) -> int:
                 analysis_height_frac=float(getattr(args, "af_analysis_height_frac", 1.0)),
                 raster_h_scale=getattr(args, "af_raster_h_scale", None),
             ),
+            force_pattern=bool(getattr(args, "force_pattern", False)),
+            record_fiducial=getattr(args, "record_fiducial", None),
+            db_path=pos_file,
             refine_config=RefineConfig(
-                abort_on_failure=bool(getattr(args, "refine_abort_on_fail", False)),
+                enable_stage=bool(getattr(args, "refine_enable_stage", False)),
+                # v0.51.0: Prepolish / Polish never mill a site whose refine failed (the
+                # batch enforces it too).
+                abort_on_failure=bool(getattr(args, "refine_abort_on_fail", False)
+                                      or getattr(args, "stage", None) in ("prepolish", "polish")),
+                coarse_fallback=not bool(getattr(args, "no_refine_coarse_fallback", False)),
                 imaging_scan_rate=(None if int(getattr(args, "imaging_scan_rate", 8)) < 0
                                    else int(getattr(args, "imaging_scan_rate", 8))),
                 scan_rate_method=getattr(args, "scan_rate_method", "set"),
             ),
             ref_base_dir=pos_file.parent,
             reset_beam_shift_between_positions=not bool(getattr(args, "no_reset_beam_shift", False)),
+            run_log=run_log,
+            after_image=_after_image_on(args),
+            after_image_dir=pos_file.parent / "images",
+            tilt_skip_ok=skip_ok,
+            stage=getattr(args, "stage", None),
+            reference_skip_ok=ref_ok,
         )
+    return 0
 
-    print('Batch milling completed.')
+
+# ----------------------------
+# Manual milling at one position (v0.51.0, site_ops.py)
+# ----------------------------
+
+def cmd_site(args: argparse.Namespace) -> int:
+    """site goto|align|push|after-image NAME --stage S: one manual step at one position."""
+    from .mill_stages import (STAGE_LABEL, reference_for_stage, resolve_stage_pattern,
+                              safe_name, stage_tag)
+    from . import site_ops as SO
+    pos_file = _resolve_user_path(args.positions_file)
+    db = PositionDatabase.load(pos_file)
+    rec = db.get(str(args.name))
+    stage, action = args.stage, args.action
+    session = pos_file.parent
+    label = f"{action} {rec.name} ({STAGE_LABEL[stage]})"
+    ely = _resolve_user_path(args.ely) if getattr(args, "ely", None) else None
+    if action == "push" and ely is None:
+        print("ERROR: push needs --ely (the standard / stage pattern).")
+        return 2
+    if args.arm and action == "align":                 # refuse before connecting
+        _ref, _desc, why = reference_for_stage(rec, stage, session)
+        if _ref is None:
+            print(f"[site] Align {rec.name} ({STAGE_LABEL[stage]}): {why}. Nothing was changed.")
+            return 2
+
+    if not args.arm:
+        print(f"[DRY RUN] {label}. Would do:")
+        print("  - Refuse if SmartSEM indicates milling")
+        if action == "goto":
+            st = rec.stage_at
+            print("  - Zero FIB beam shift X/Y")
+            if args.move_method != "none":
+                t = "current tilt" if st.t_deg is None else f"T={st.t_deg:.2f} deg"
+                print(f"  - Move stage ({args.move_method}) to X={st.x_m:.6e} m, "
+                      f"Y={st.y_m:.6e} m, Z={st.z_m:.6e} m, {t}, R={st.r_deg:.3f} deg; wait "
+                      f"for arrival")
+            print(f"  - Set AP_FIB_OBJECTIVE_POTENTIAL = {rec.fib_objective_potential_v:.3f} V")
+            if not args.no_set_mag:
+                print(f"  - Set AP_FIB_MAGNIFICATION = {rec.fib_magnification_x:g}")
+        elif action == "align":
+            ref, desc, why = reference_for_stage(rec, stage, session)
+            if ref is None:
+                print(f"  - REFUSE: {why}")
+                return 2
+            else:
+                print(f"  - Refine to the {desc}; leave the beam-shift correction on"
+                      + (" (stage X/Y move allowed, <= 100 um)" if args.refine_enable_stage
+                         else ""))
+        elif action == "push":
+            path, _src, msg = resolve_stage_pattern(rec, stage, ely, session)
+            print(f"  - {msg}")
+            print(f"  - Copy {Path(path).name} to {Path(args.smartfib_drop_dir) / args.smartfib_drop_name}")
+            print("  - Execute: CMD_SMARTFIB_LOAD_ELY, CMD_SMARTFIB_PREPARE_EXPOSURE")
+            print("  - STOP: CMD_FIB_START_MILLING is NOT sent (start milling in SmartFIB)")
+        else:
+            print(f"  - Grab one FIB frame at {rec.fib_magnification_x:g}x into "
+                  f"{session / 'images'} as {safe_name(rec.name)}_{stage_tag(stage)}_<time>.bmp")
+            print("  - Record it in positions.json as the latest "
+                  f"{STAGE_LABEL[stage]} after image, and in a run log (kind 'manual')")
+        return 0
+
+    with SmartSEM() as sem:
+        if args.connect == "local":
+            sem.connect_local(args.machine)
+        else:
+            sem.connect_remoting()
+        try:
+            if action == "goto":
+                SO.site_goto(sem, rec, move_method=args.move_method,
+                             set_mag=not args.no_set_mag,
+                             stage_timeout_s=float(args.stage_timeout_s))
+                print(f"SITE-DONE: goto {rec.name}")
+            elif action == "align":
+                rate = int(args.imaging_scan_rate)
+                cfg = RefineConfig(enable_stage=bool(args.refine_enable_stage),
+                                   imaging_scan_rate=None if rate < 0 else rate,
+                                   scan_rate_method=args.scan_rate_method)
+                res = SO.site_align(sem, rec, stage, session, cfg)
+                ok = bool(res is not None and getattr(res, "success", False))
+                print(f"SITE-DONE: align {rec.name} {'OK' if ok else 'FAILED'}")
+                return 0 if ok else 1
+            elif action == "push":
+                SO.site_push(sem, rec, stage, ely, session,
+                             drop_dir=args.smartfib_drop_dir, drop_name=args.smartfib_drop_name,
+                             load_delay_s=float(args.smartfib_load_delay_s),
+                             prepare_delay_s=float(args.smartfib_prepare_delay_s))
+                print(f"SITE-DONE: push {rec.name} (milling NOT started)")
+            else:
+                path, warn = SO.site_after_image(sem, db, rec, stage, pos_file,
+                                                 run_log=not args.no_run_log)
+                print(f"SITE-DONE: after-image {rec.name} "
+                      + (Path(path).name if path is not None else "NOT taken"))
+                return 0 if path is not None else 1
+        except SO.SiteRefused as e:
+            print(f"[site] {e}")
+            return 4
     return 0
 
 # ----------------------------
@@ -734,6 +1124,10 @@ def build_parser(prog_name: str = "pyfib") -> argparse.ArgumentParser:
     # ---- run
     p_run = sub.add_parser("run", help="Run milling for the given .ely pattern.")
     p_run.add_argument("ely", help="Local path to the .ely file (on this PC).")
+    p_run.add_argument("--fib-mag", type=float, default=None,
+                       help="Set (and verify) AP_FIB_MAGNIFICATION before milling, e.g. the "
+                            "mag a following capture-position will use so a fiducial lands "
+                            "where the reference image expects it.")
 
     p_run.add_argument(
         "--load-method",
@@ -869,7 +1263,9 @@ def build_parser(prog_name: str = "pyfib") -> argparse.ArgumentParser:
     p_cap.add_argument(
         "--no-unfreeze-before-grab",
         action="store_true",
-        help="By default pyFIB executes CMD_UNFREEZE_ZONE before grabbing to ensure a fresh frame. Use this flag to disable that behavior.",
+        help="By default pyFIB scans a FRESH frame before grabbing (unfreeze -> scan a "
+             "full frame -> freeze at end of frame -> grab). Use this flag to instead "
+             "grab the frame currently on screen, as-is (e.g. one you froze by hand).",
     )
     p_cap.add_argument(
         "--no-freeze-after-grab",
@@ -893,9 +1289,57 @@ def build_parser(prog_name: str = "pyfib") -> argparse.ArgumentParser:
         help="Seconds to wait after setting magnification before grabbing/recording. Default: 0.25",
     )
     p_cap.add_argument(
+        "--frame-wait-s",
+        type=float,
+        default=3.0,
+        help="Frame-safe grab: minimum seconds of live scan before freezing at end of "
+             "frame (the DP_FROZEN wait then guarantees the frame completed). Default: 3.0",
+    )
+    p_cap.add_argument(
+        "--coarse-mag",
+        type=float,
+        default=None,
+        help="Also grab a COARSE reference at this FIB magnification (e.g. 800) right after "
+             "the fine one, for the two-stage refine. Off by default; the fine capture is "
+             "unchanged either way. Saved as <name>_coarse.bmp.",
+    )
+    p_cap.add_argument(
+        "--coarse-scan-rate",
+        type=int,
+        default=5,
+        help="Scan rate for the coarse reference frame (restored afterwards). Default: 5",
+    )
+    p_cap.add_argument(
+        "--frozen-timeout-s",
+        type=float,
+        default=30.0,
+        help="Frame-safe grab: maximum seconds to wait for DP_FROZEN. Default: 30",
+    )
+    p_cap.add_argument(
         "--include-tilt",
+        dest="include_tilt",
         action="store_true",
-        help="Also record AP_STAGE_AT_T (tilt) for completeness.",
+        default=True,
+        help="Record AP_STAGE_AT_T (tilt). DEFAULT ON (recall then restores the tilt).",
+    )
+    p_cap.add_argument(
+        "--no-include-tilt",
+        dest="include_tilt",
+        action="store_false",
+        help="Do not record tilt (recall will leave the tilt where it is).",
+    )
+    p_cap.add_argument(
+        "--fiducial-number",
+        type=int,
+        default=None,
+        help="Record which NUMBERED fiducial (1-30) was milled before this capture.",
+    )
+    p_cap.add_argument(
+        "--fiducial-side",
+        choices=("left", "right"),
+        default=None,
+        help="Record that a fiducial was milled on this side of the image BEFORE this "
+             "capture (so the reference image contains it).",
     )
     p_cap.add_argument(
         "--arm",
@@ -965,10 +1409,12 @@ def build_parser(prog_name: str = "pyfib") -> argparse.ArgumentParser:
     p_go.add_argument("--positions-file", default="positions.json", help="Path to positions JSON file.")
     p_go.add_argument(
         "--move-method",
-        choices=["ap_goto", "movestage", "none"],
-        default="ap_goto",
+        choices=["movestage", "ap_goto", "none"],
+        default="movestage",
         help=(
-            "Stage recall method. ap_goto sets AP_STAGE_GOTO_* targets. movestage calls MoveStage(). none does not move stage."
+            "Stage recall method. Default: movestage (calls MoveStage()). ap_goto sets "
+            "AP_STAGE_GOTO_* targets (on 2026-10-01 it ignored a 14 um move). none does "
+            "not move stage."
         ),
     )
     p_go.add_argument(
@@ -1013,9 +1459,10 @@ def build_parser(prog_name: str = "pyfib") -> argparse.ArgumentParser:
 
     p_gm.add_argument(
         "--move-method",
-        choices=["ap_goto", "movestage", "none"],
-        default="ap_goto",
-        help="Stage recall method before milling. Default: ap_goto",
+        choices=["movestage", "ap_goto", "none"],
+        default="movestage",
+        help="Stage recall method before milling. Default: movestage (MoveStage). "
+             "ap_goto ignored a 14 um move on 2026-10-01.",
     )
     p_gm.add_argument(
         "--no-wait-stage-idle",
@@ -1129,9 +1576,10 @@ def build_parser(prog_name: str = "pyfib") -> argparse.ArgumentParser:
 
     p_mp.add_argument(
         '--move-method',
-        choices=['ap_goto', 'movestage', 'none'],
-        default='ap_goto',
-        help='Stage recall method before milling each position. Default: ap_goto',
+        choices=['movestage', 'ap_goto', 'none'],
+        default='movestage',
+        help='Stage recall method before milling each position. Default: movestage '
+             '(MoveStage). ap_goto ignored a 14 um move on 2026-10-01.',
     )
     p_mp.add_argument(
         '--no-wait-stage-idle',
@@ -1224,6 +1672,54 @@ def build_parser(prog_name: str = "pyfib") -> argparse.ArgumentParser:
         action='store_true',
         help='Continue to the next position if one position fails. Default: stop on first error.',
     )
+    p_mp.add_argument(
+        '--after-image',
+        action='store_true',
+        help='After milling each site, grab ONE fresh FIB frame at the capture magnification '
+             '(same sequence as capture-position) into <session>/images/<name>_after_<time>.bmp, '
+             'before the beam shift is reset. Skipped with a warning if SmartSEM still '
+             'indicates milling. Default: off.',
+    )
+    p_mp.add_argument(
+        '--stage', choices=('rough', 'prepolish', 'polish'), default=None,
+        help='v0.51.0 milling stage. rough: as without it, but after images are named '
+             '<name>_1-rough_<time>.bmp and recorded in positions.json. prepolish / polish: '
+             'the GIVEN .ely at every position (authored rough patterns are never used), '
+             'refine aligns to the latest Rough Mill / Prepolish after image, and a position '
+             'without it is not milled (asked, or --accept-reference-skips). Any --stage '
+             'turns the after image on (--no-after-image to turn it off).',
+    )
+    p_mp.add_argument(
+        '--accept-reference-skips', default=None, metavar='NAMES',
+        help='Comma-separated positions you agree NOT to mill in this --stage run because '
+             'the previous stage\'s after image is missing. Without it an armed run asks at '
+             'a terminal, or refuses before any motion.',
+    )
+    p_mp.add_argument('--no-after-image', action='store_true',
+                      help='With --stage: do not grab the after image (the next stage then '
+                           'has nothing to align to for these positions).')
+    p_mp.add_argument(
+        '--no-run-log',
+        action='store_true',
+        help='Do not write <session>/runs/run_<time>.json/.log for this armed run '
+             '(the record the session report reads). Default: write it.',
+    )
+    # --- v0.46.0 batch tilt limit (smartfib_executor/tilt_guard.py) ---
+    p_mp.add_argument(
+        '--tilt-check',
+        action='store_true',
+        help='Read-only: connect, read the current stage tilt and list which positions the '
+             'batch would mill or SKIP under the 2 deg batch tilt limit, then exit. Moves '
+             'nothing (works without --arm).',
+    )
+    p_mp.add_argument(
+        '--accept-tilt-skips',
+        default=None,
+        metavar='NAMES',
+        help='Comma-separated positions you agree NOT to mill because their recorded tilt is '
+             'outside the 2 deg batch limit (as listed by --tilt-check). Without it, an armed '
+             'run asks at a terminal, or refuses before any motion.',
+    )
 
     # --- per-position autofocus / refine ---
     p_mp.add_argument(
@@ -1248,9 +1744,25 @@ def build_parser(prog_name: str = "pyfib") -> argparse.ArgumentParser:
     p_mp.add_argument('--af-abort-on-fail', action='store_true',
                       help='Abort the position if autofocus does not converge '
                            '(default: warn and mill at the recalled voltage).')
+    p_mp.add_argument('--refine-enable-stage', action='store_true',
+                      help='Let refine move the stage (X/Y only, <= 100 um per axis, one '
+                           'move, undone unless the drift halves) when the drift exceeds '
+                           'the 10 um beam-shift window. Needs R = 12 and tilt -1..31 deg '
+                           '(calibrated model); otherwise it refuses. Default OFF.')
+    p_mp.add_argument('--no-refine-coarse-fallback', action='store_true',
+                      help='Do not retry refine with the position\'s 800x image when the '
+                           '2000x refine cannot locate the site (default: retry, if the '
+                           'position has an 800x image from capture --coarse-mag).')
     p_mp.add_argument('--refine-abort-on-fail', action='store_true',
                       help='Abort the position if refine does not converge '
                            '(default: warn and mill at the recalled position).')
+    p_mp.add_argument('--force-pattern', action='store_true',
+                      help='Mill the GIVEN .ely at every named position even if a '
+                           'position has an authored pattern linked (bypasses the '
+                           'per-position override). Used for fiducials.')
+    p_mp.add_argument('--record-fiducial', choices=('left', 'right'), default=None,
+                      help='After a successful mill, record fiducial_side=<side> on the '
+                           'milled position(s) and save the positions file.')
     p_mp.add_argument('--no-reset-beam-shift', action='store_true',
                       help='Do NOT zero AP_FIB_BEAM_SHIFT_X/Y between positions. By '
                            'default the FIB beam shift is reset to 0 before the first '
@@ -1281,6 +1793,45 @@ def build_parser(prog_name: str = "pyfib") -> argparse.ArgumentParser:
 
     _add_common_connection_args(p_mp)
     p_mp.set_defaults(func=cmd_mill_positions)
+
+    # ---- site (v0.51.0): one manual step at one position
+    p_site = sub.add_parser(
+        'site',
+        help='Manual milling at ONE position (v0.51.0): goto (zero beam shift, recall stage + '
+             'objective + mag), align (refine to the stage reference, beam shift left on), '
+             'push (load + prepare the pattern in SmartFIB, milling NOT started), after-image '
+             '(grab + record the stage after image). Dry run without --arm.',
+    )
+    p_site.add_argument('action', choices=('goto', 'align', 'push', 'after-image'))
+    p_site.add_argument('name', help='Position name (e.g. position_12).')
+    p_site.add_argument('--stage', choices=('rough', 'prepolish', 'polish'), required=True,
+                        help='Milling stage (required): sets the align reference, the pushed '
+                             'pattern and the after-image name.')
+    p_site.add_argument('--positions-file', default='positions.json')
+    p_site.add_argument('--ely', default=None,
+                        help='push: the standard pattern (rough; a position\'s authored '
+                             'pattern overrides it) or the stage pattern (prepolish/polish).')
+    p_site.add_argument('--move-method', choices=['movestage', 'ap_goto', 'none'],
+                        default='movestage')
+    p_site.add_argument('--stage-timeout-s', type=float, default=120.0)
+    p_site.add_argument('--no-set-mag', action='store_true',
+                        help='goto: leave the FIB magnification as it is.')
+    p_site.add_argument('--refine-enable-stage', action='store_true',
+                        help='align: allow one X/Y stage move (<= 100 um) when the drift '
+                             'exceeds the beam-shift window.')
+    p_site.add_argument('--imaging-scan-rate', type=int, default=8)
+    p_site.add_argument('--scan-rate-method', choices=('set', 'cmd', 'set_then_cmd'),
+                        default='cmd')
+    p_site.add_argument('--smartfib-drop-dir', default=r'C:\ProgramData\Carl Zeiss\SmartFIB\API\Drop')
+    p_site.add_argument('--smartfib-drop-name', default='ApiLayout.ely')
+    p_site.add_argument('--smartfib-load-delay-s', type=float, default=1.0)
+    p_site.add_argument('--smartfib-prepare-delay-s', type=float, default=1.0)
+    p_site.add_argument('--no-run-log', action='store_true',
+                        help='after-image: do not write the manual run log.')
+    p_site.add_argument('--arm', action='store_true',
+                        help='Actually execute on the instrument. Without it: dry run.')
+    _add_common_connection_args(p_site)
+    p_site.set_defaults(func=cmd_site)
 
     # ---- ui
     p_ui = sub.add_parser(

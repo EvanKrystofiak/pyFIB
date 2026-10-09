@@ -1,0 +1,72 @@
+MILLING STAGES: ROUGH MILL -> PREPOLISH -> POLISH (pyFIB v0.51.0)      about 20 min
+==============================================================================
+
+What changed
+  * Prepolish and Polish mill THEIR OWN pattern at every position (never the authored
+    rough pattern). Refine aligns Prepolish to the Rough Mill after image and Polish to
+    the Prepolish after image.
+  * After images are on by default and named
+      images/<pos>_1-rough_<time>.bmp, <pos>_2-prepolish_<time>.bmp, <pos>_3-polish_<time>.bmp
+    Older <pos>_after_<time>.bmp files count as Rough Mill after images.
+  * A Prepolish/Polish batch lists positions without the previous stage's after image
+    and asks before skipping them (not milled).
+  * Every milling tab has, for the selected row: Go to / Align / Push pattern /
+    Record after image. Push loads + prepares the pattern in SmartFIB and does NOT
+    start milling.
+
+Use a session that was already rough milled with after images if you have one. Steps 1-2
+never touch the microscope. Stop and send the Log text if anything starts milling or
+moves when it should not.
+
+
+1) DRY RUN, ARM OFF                                                       3 min
+   a) Rough Mill tab: "Align to" = capture image for every row; "After image" shows the
+      newest rough after image (or -).
+   b) Prepolish tab: Browse to any .ely as the prepolish pattern (a copy of the default
+      is fine for this). "Align to" shows "rough MM-DD HH:MM" or "missing" (red).
+      Start (ARM OFF). Expect in the Log: "Milling stage: Prepolish", "Pattern use:
+      <file> at EVERY position", "REFINE to <pos>_..." for positions with an image and
+      "SKIP -- no Rough Mill after image" for the others.
+
+
+2) MANUAL BUTTONS, ARM OFF                                                2 min
+   Prepolish tab: click a row, then Go to, Align, Push pattern, Record after image.
+   The tab stays on screen; each plan is in the Log ([DRY RUN] ...). Push says
+   "STOP: CMD_FIB_START_MILLING is NOT sent".
+
+
+   Note: when ARMED, each button first watches SmartSEM for 5 s (10 s for Go to) and
+   refuses if milling shows at any moment -- that pause is expected.
+
+
+3) PUSH WITHOUT MILLING, ARM ON (no stage motion)                         3 min
+   SAFETY CHECK: watch SmartFIB.
+   a) Rough Mill tab: select the position the stage is AT now (or Go to it first).
+   b) Push pattern -> confirm. Expect the pattern to appear in SmartFIB, prepared, and
+      milling NOT started. Log: "[PUSH] Pattern loaded and prepared in SmartFIB; milling
+      NOT started."  Please note whether PREPARE_EXPOSURE blanks/unblanks or changes the
+      FIB mode; send that.
+   c) Clear the layout in SmartFIB if you do not want it.
+
+
+4) RECORD AFTER IMAGE, ARM ON                                             2 min
+   Same row: Record after image -> confirm. One FIB frame. Expect
+   images/<pos>_1-rough_<time>.bmp, the "After image" column updated, and in the
+   Prepolish tab that row's "Align to" now shows this time.
+
+
+5) GO TO + ALIGN, ARM ON                                                  5 min
+   a) Rough Mill tab: select ANOTHER position that has a rough after image. Go to ->
+      confirm. Expect: beam shift zeroed, stage move, objective, magnification.
+   b) Prepolish tab: same row -> Align -> confirm. Expect "aligning to the Rough Mill
+      after image <file>" and a residual of a few tenths of a um. Send the Log lines.
+
+
+6) REPORT                                                                 2 min
+   Tools -> Make report. The positions from 4/5 show Before / Rough buttons; Runs table
+   shows "manual . rough" for step 4.
+
+
+Optional later (needs the prepolish .ely): one sacrificial site, Prepolish tab, ARM ON,
+Start with that site only -> it refines to its rough after image, mills the prepolish
+pattern, and saves <pos>_2-prepolish_<time>.bmp. Polish tab then shows it in "Align to".

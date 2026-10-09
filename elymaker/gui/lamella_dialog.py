@@ -35,6 +35,10 @@ def _probe_combo(names, current):
     return c
 
 
+# Stages the operator may switch off; the rough stages are always included.
+_OPTIONAL_STAGES = ("Fine 1", "Fine 2", "Polish")
+
+
 class LamellaDialog(QDialog):
     def __init__(self, parent=None, depth_um=1.0, recipe=None, spec=None) -> None:
         super().__init__(parent)
@@ -65,17 +69,42 @@ class LamellaDialog(QDialog):
         # per-stage table: current + box height (outermost first)
         box = QGroupBox("Stages (outer \u2192 inner): current and box height")
         grid = QGridLayout(box)
-        grid.addWidget(QLabel("Stage"), 0, 0)
-        grid.addWidget(QLabel("Current"), 0, 1)
-        grid.addWidget(QLabel("Height (um)"), 0, 2)
+        grid.addWidget(QLabel("On"), 0, 0)
+        grid.addWidget(QLabel("Stage"), 0, 1)
+        grid.addWidget(QLabel("Current"), 0, 2)
+        grid.addWidget(QLabel("Height (um)"), 0, 3)
+        rl = QLabel("Round inner")
+        rl.setToolTip("Round the two corners facing the lamella (written as a polygon "
+                      "that still mills toward the lamella).")
+        grid.addWidget(rl, 0, 4)
         self._rows = []
         for i, st in enumerate(spec.stages):
-            grid.addWidget(QLabel(st.name), i + 1, 0)
+            # The rough stages are always milled; the fine/polish stages can be
+            # switched off (e.g. to stop at a thicker lamella or mill them later).
+            chk = QCheckBox()
+            chk.setChecked(True)
+            if st.name in _OPTIONAL_STAGES:
+                chk.setToolTip("Untick to leave this stage out of the pattern.")
+            else:
+                chk.setEnabled(False)
+                chk.setToolTip("Rough stages are always included.")
+            grid.addWidget(chk, i + 1, 0)
+            grid.addWidget(QLabel(st.name), i + 1, 1)
             combo = _probe_combo(self._names, st.probe)
             hspin = _dsb(st.height_um, 0.001, 1e4)
-            grid.addWidget(combo, i + 1, 1)
-            grid.addWidget(hspin, i + 1, 2)
-            self._rows.append((st.name, combo, hspin))
+            grid.addWidget(combo, i + 1, 2)
+            grid.addWidget(hspin, i + 1, 3)
+            rchk = QCheckBox()
+            rchk.setChecked(bool(getattr(st, "round_inner", False)))
+            grid.addWidget(rchk, i + 1, 4)
+            self._rows.append((st.name, combo, hspin, chk, st.overlap_um, rchk))
+        # auto corner radius (one setting for every rounded stage)
+        self.corner_frac = _dsb(spec.corner_radius_frac, 0.0, 1.0, dec=2, step=0.05)
+        self.corner_frac.setToolTip(
+            "Radius = this fraction of each box's height, capped at half the width "
+            "step (so a curve never reaches under the next finer stage).")
+        grid.addWidget(QLabel("Corner radius (x box height)"), len(spec.stages) + 1, 1, 1, 2)
+        grid.addWidget(self.corner_frac, len(spec.stages) + 1, 3)
         root.addWidget(box)
 
         # side trenches
@@ -112,8 +141,10 @@ class LamellaDialog(QDialog):
         return None if t.startswith("(") else t
 
     def spec(self) -> LamellaSpec:
-        stages = [LamellaStage(name, self._probe_value(combo), hspin.value())
-                  for (name, combo, hspin) in self._rows]
+        stages = [LamellaStage(name, self._probe_value(combo), hspin.value(),
+                               overlap_um=ovl, round_inner=rchk.isChecked())
+                  for (name, combo, hspin, chk, ovl, rchk) in self._rows
+                  if chk.isChecked()]
         return LamellaSpec(
             final_width_um=self.width.value(),
             final_thickness_um=self.thickness.value(),
@@ -128,6 +159,7 @@ class LamellaDialog(QDialog):
             trench_width_um=self.tr_width.value(),
             trench_offset_um=self.tr_offset.value(),
             trench_probe=self._probe_value(self.tr_probe),
+            corner_radius_frac=self.corner_frac.value(),
         )
 
     @property

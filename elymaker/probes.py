@@ -21,7 +21,10 @@ from .model import Probe
 _SEED = {
     "30kV:10pA": (1e-11, 2.5e-8),
     "30kV:20pA": (2e-11, 3.5e-8),
-    "30kV:50pA": (5e-11, 5.0e-8),     # diameter ESTIMATED (interpolated)
+    # 50 pA: SmartFIB names this probe "30kV:50pA ref" (trailing " ref") with a 45 nm
+    # spot -- CONFIRMED from a SmartFIB-corrected .ely (Corrected.ely). The earlier
+    # "30kV:50pA" / 50 nm entry was an estimate that SmartFIB did not recognise.
+    "30kV:50pA ref": (5e-11, 4.5e-8),
     "30kV:100pA": (1e-10, 7e-8),
     "30kV:300pA": (3e-10, 1.75e-7),
     "30kV:700pA": (7e-10, 2.1e-7),
@@ -40,6 +43,10 @@ PROBES: Dict[str, Probe] = {
     name: Probe(name=name, type_="specific", current_A=cur, diameter_m=dia)
     for name, (cur, dia) in _SEED.items()
 }
+# Alias: the plain key still resolves, but the Probe it returns carries the REAL
+# SmartFIB name ("30kV:50pA ref") so the written .ely is correct.
+PROBES["30kV:50pA"] = PROBES["30kV:50pA ref"]
+_ALIASES = {"30kV:50pA"}   # resolvable keys that are not distinct probes
 
 
 def get_probe(name: str) -> Probe:
@@ -71,4 +78,5 @@ def probe_names_by_current() -> list:
     sensible ramp -- 10pA, 20pA, 100pA, ... 15nA -- rather than the misleading
     alphabetical order where '15nA' sorts near '100pA'.
     """
-    return sorted(PROBES, key=lambda n: PROBES[n].current_A)
+    return sorted((n for n in PROBES if n not in _ALIASES),
+                  key=lambda n: PROBES[n].current_A)

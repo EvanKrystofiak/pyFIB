@@ -1,0 +1,92 @@
+STAGE REFINE TEST (pyFIB v0.39.0)                        about 45 min
+=====================================================================
+
+Goal: confirm refine can bring a site back with ONE stage move (X/Y only,
+<= 100 um), first on its own (Part A), then inside a mill batch (Part B).
+Stop at the first FAIL and send back what it printed.
+
+Run every command from a command prompt in the pyFIB folder
+(the one containing smartfib_executor\).
+<pf> = the session's positions.json (shown in the top bar of the UI).
+
+
+BEFORE YOU START (5 min, no beam)
+---------------------------------
+1. If serialFIB has run since pyFIB last worked: close ALL Python programs, then
+       rmdir /s /q C:\Users\sem\AppData\Local\Temp\gen_py\3.9
+2. API check (read-only):
+       python test_scripts\api_check.py
+   PASS: "LATE-bound (CDispatch)" and every "pyFIB get_..." line shows a value.
+3. Stage: R = 12 deg (the calibration rotation) and your milling tilt
+   (0-12 or 30 deg). GIS retracted. A SACRIFICIAL area with texture, in focus
+   at 2000x. Refine refuses any other R, by design.
+
+
+PART A - refine on its own (about 15 min, about 11 FIB frames)
+---------------------------------------------------------------
+A1. Dry run (nothing moves, nothing is imaged):
+        python -m smartfib_executor.refine.offset_test
+    PASS: "tilt ... R ... -> OK" and an X and a Y offset listed.
+
+A2. Plan check (the script moves the stage off target and back; refine itself
+    moves nothing; asks you to confirm):
+        python -m smartfib_executor.refine.offset_test --arm
+    PASS: both axes "PASS (plan)", and a return check under 0.5 um.
+    If an axis says "WRONG SIGN": STOP. Do not run A3. Send the output.
+
+A3. Live correction (asks you to confirm):
+        python -m smartfib_executor.refine.offset_test --arm --live
+    PASS: both axes "PASS (plan + live)" with a residual under 0.3 um.
+
+A4. OPTIONAL, 2 min. Aliasing guard (T07):
+        python -m smartfib_executor.refine.offset_test --arm --axes x --offset-x-um 30
+    EXPECTED: "FAIL (plan: no confident measurement)". That FAIL means the
+    guard WORKED: nothing is corrected at a 30 um drift.
+
+Bring back: each refine_offset_test_<time>\ folder (results.json + PNGs).
+
+
+PART B - stage refine inside a mill batch (about 20 min)
+---------------------------------------------------------
+Only if A2 and A3 passed.
+
+B1. Start a NEW session. In the Capture tab UNTICK "Record tilt" (recall moving
+    tilt is still under review). Capture ONE sacrificial site: position_1.
+
+B2. Make a test copy of it whose stage X is 14 um off (file only, no motion):
+        python -m smartfib_executor.refine.offset_position <pf> position_1 --dx-um 14
+    This creates position_1_dx14, which uses position_1's reference image. Recall
+    will land 14 um off, so refine has to bring it back.
+    In pyFIB, Positions tab > Load / Refresh.
+
+B3. Mill tab:
+      - Pattern: smartfib_executor\assets\fiducial_left.ely  (quick 14 um square)
+      - Tick ONLY position_1_dx14: Mill + Refine (Autofocus off, to save time)
+      - Tick "Refine may move stage", "Skip site if refine fails",
+        and "Continue on error"
+      - ARM > Start
+    (Same thing from the command line:
+        python -m smartfib_executor.cli mill-positions smartfib_executor\assets\fiducial_left.ely position_1_dx14 --positions-file <pf> --refine position_1_dx14 --refine-enable-stage --refine-abort-on-fail --continue-on-error --arm )
+
+B4. PASS, in the Log:
+      - "STAGE decision ... -> stage (-14.x, ~0) um"
+      - "STAGE moved"
+      - "aligned via stage+beam_shift; residual" under 0.3 um
+      - then milling
+    Then take a FIB image: the square should sit where it would on position_1's
+    image (about 21 um left of the site centre), NOT 14 um off.
+    A beam-shift warning before milling is expected after refine.
+    If refine fails, "Skip site" means nothing is milled; send the Log.
+
+B5. OPTIONAL: repeat in Y with a new copy (tilt 12: --dy-um 18;
+    tilt 2: --dy-um 22; tilt 30: --dy-um 15).
+
+Bring back: the Log text and the FIB image after B4.
+
+
+ONE QUICK CHECK FROM LAST TIME (no beam)
+----------------------------------------
+In the T13 Log, find the site that failed to refine: "drift X um exceeds the
+10 um beam-shift limit". If X was about 15 um or less, this release covers it.
+If X was more than about 17 um, that site needs the 800x coarse pass, which is
+not in mill batches yet.

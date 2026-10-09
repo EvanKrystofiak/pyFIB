@@ -132,6 +132,111 @@ def test_aborts_when_eht_never_off_before_valves_or_stage():
     assert sem.moves == []
 
 
+# ------------- EHT off must be CONFIRMED before any valve (2026-09-25) ------------- #
+class _LaggingEhtSem(_RecordingSem):
+    """Models the instrument report: after CMD_EHT_OFF, AP_ACTUALKV drops below 50 V
+    at once, but the Beam State stays 'EHT going off' for a while. The OLD code closed
+    the column valve during that window. Records the state at each valve command."""
+    def __init__(self, going_off_reads=10, **k):
+        super().__init__(**k)
+        self._left = None
+        self._going_off_reads = going_off_reads
+        self.state_at_cmd = {}
+
+    def execute(self, c):
+        if c.startswith("CMD_CLOSE_COL") or c.startswith("CMD_FIB_GUN_VALVE"):
+            self.state_at_cmd[c] = self.runup_state
+        super().execute(c)
+        if c == "CMD_EHT_OFF":
+            self.eht_v = 20.0                      # already "below 50 V" ...
+            self.runup_state = "EHT going off"     # ... but not off yet
+            self._left = self._going_off_reads
+
+    def get_digital_text(self, param):
+        if param == "DP_RUNUPSTATE" and self._left is not None:
+            self._left -= 1
+            if self._left <= 0:
+                self.runup_state = "EHT Off"; self.eht_v = 0.0
+        return super().get_digital_text(param)
+
+
+def test_column_valve_waits_for_beam_state_eht_off_not_just_low_kv():
+    sem = _LaggingEhtSem(eht_v=2000.0, column_valve=1)
+    clk = _FakeClock(); logs = []
+    res = run_prep_cryo(sem, _db(), armed=True, logger=logs.append,
+                        clock_sleep=clk.sleep, clock_now=clk.now)
+    assert res.ok, res.reason
+    assert sem.state_at_cmd["CMD_CLOSE_COL_CHAMBER_VALVE"] == "EHT Off"
+    assert any("EHT going off" in l for l in logs)        # the lag is visible in the log
+
+
+def test_eht_off_must_be_held_before_valves():
+    """State reads EHT Off once, flips back, then settles: the 3 s hold restarts."""
+    class _Flicker(_LaggingEhtSem):
+        def get_digital_text(self, param):
+            v = super().get_digital_text(param)
+            if param == "DP_RUNUPSTATE" and v == "EHT Off" and not getattr(self, "_f", 0):
+                self._f = 1; self.runup_state = "EHT going off"; self._left = 4
+            return v
+    sem = _Flicker(eht_v=2000.0, column_valve=1)
+    clk = _FakeClock()
+    res = run_prep_cryo(sem, _db(), armed=True, logger=lambda m: None,
+                        clock_sleep=clk.sleep, clock_now=clk.now)
+    assert res.ok and sem.state_at_cmd["CMD_CLOSE_COL_CHAMBER_VALVE"] == "EHT Off"
+
+
+def test_state_eht_off_but_kv_still_high_keeps_waiting_then_aborts():
+    class _HighKv(_RecordingSem):
+        def execute(self, c):
+            super().execute(c)
+            if c == "CMD_EHT_OFF":
+                self.eht_v = 300.0                 # state says off, voltage disagrees
+    sem = _HighKv(eht_v=2000.0, column_valve=1)
+    clk = _FakeClock()
+    res = run_prep_cryo(sem, _db(), armed=True, logger=lambda m: None,
+                        clock_sleep=clk.sleep, clock_now=clk.now)
+    assert not res.ok and "300 V" in res.reason
+    assert "CMD_CLOSE_COL_CHAMBER_VALVE" not in sem.commands and sem.moves == []
+
+
+def test_unreadable_beam_state_aborts_before_valves():
+    class _NoRunup(_RecordingSem):
+        def get_digital_text(self, param):
+            if param == "DP_RUNUPSTATE":
+                raise RuntimeError("unknown parameter")
+            return super().get_digital_text(param)
+        def get_digital(self, param):
+            if param == "DP_RUNUPSTATE":
+                raise RuntimeError("unknown parameter")
+            return super().get_digital(param)
+    sem = _NoRunup(eht_v=2000.0, column_valve=1)
+    clk = _FakeClock()
+    res = run_prep_cryo(sem, _db(), armed=True, logger=lambda m: None,
+                        clock_sleep=clk.sleep, clock_now=clk.now)
+    assert not res.ok and "DP_RUNUPSTATE" in res.reason
+    assert "CMD_CLOSE_COL_CHAMBER_VALVE" not in sem.commands and sem.moves == []
+
+
+def test_numeric_zero_beam_state_never_counts_as_off():
+    """A stale/failed numeric read of 0 ('Shutdown') must not pass as EHT Off."""
+    from ..steps import _beam_state
+    class _S:
+        armed = True
+        def get_str(self, m): return None
+        def get_float(self, m): return 0.0
+    assert _beam_state(_S()) == (False, "code 0")
+    class _S10(_S):
+        def get_float(self, m): return 10.0
+    assert _beam_state(_S10())[0] is True
+
+
+def test_dry_run_describes_both_eht_conditions():
+    sem = _RecordingSem(eht_v=2000.0)
+    logs = []
+    run_prep_cryo(sem, _db(), armed=False, logger=logs.append)
+    assert any("DP_RUNUPSTATE" in l and "AP_ACTUALKV" in l for l in logs)
+
+
 def test_missing_waypoint_refuses():
     from ...positions import PositionDatabase
     res = run_prep_cryo(SimulatedPrepSem(), PositionDatabase(), armed=True,

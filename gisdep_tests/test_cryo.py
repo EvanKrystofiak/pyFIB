@@ -158,3 +158,72 @@ def test_m_mismatch_warns_but_does_not_move_m():
     assert any("WARNING" in s and "M" in s for s in rep.steps)
     # M is preserved at the current 10 mm -- never moved to 12.99
     assert api.get_stage_position().m_m == pytest.approx(0.010, abs=1e-9)
+
+
+# ---- pyFIB patch v0.36.0: skip the CLEM SAFE detour when already at the grid ---- #
+def _visited_clem(api):
+    return any(abs(mv[2] - WP["CLEM_SAFE"].z_m) < 1e-6 for mv in api.stage_moves)
+
+
+def test_already_at_grid_makes_no_move():
+    g = WP["GRID1"]
+    api = make(x=g.x_m, y=g.y_m, z=g.z_m, t=g.tilt_deg, r=g.rot_deg)
+    rep = positioner(api).go_to_grid("GRID1")
+    assert rep.reached and api.stage_moves == []
+    assert any("CLEM SAFE skipped" in s for s in rep.steps)
+
+
+def test_beside_grid_after_wd_adjust_goes_direct_not_via_clem():
+    g = WP["GRID1"]                         # Z moved 0.6 mm by a previous WD step
+    api = make(x=g.x_m, y=g.y_m, z=g.z_m + 0.0006, t=g.tilt_deg, r=g.rot_deg)
+    rep = positioner(api).go_to_grid("GRID1")
+    assert rep.reached and not _visited_clem(api)
+    pos = api.get_stage_position()
+    assert pos.z_m == pytest.approx(g.z_m, abs=1e-6)
+    assert api.stage_moves[-1][2] == pytest.approx(g.z_m, abs=1e-9)   # Z moved last
+
+
+def test_rotation_wrap_counts_as_beside():
+    WP2 = dict(WP); WP2["GRID1"] = CryoWaypoint("GRID1", 0.001, 0.002, 0.030, 30.0, 359.95)
+    api = make(x=0.001, y=0.002, z=0.030, t=30.0, r=0.0)
+    cfg = StageMoveConfig(verify_tol_m=1e-5, verify_tol_deg=0.1, idle_timeout_s=120.0)
+    p = CryoPositioner(api, waypoints=WP2, clock=api.clock, cfg=cfg)
+    assert p._near(api.get_stage_position(), WP2["GRID1"])
+
+
+@pytest.mark.parametrize("kw", [
+    dict(t=35.0),            # tilt swing needed
+    dict(r=10.0),            # rotation swing needed
+    dict(z_off=0.003),       # Z far from the grid (> 1 mm)
+    dict(x_off=0.001),       # X more than 0.3 mm away
+])
+def test_not_beside_grid_still_goes_via_clem(kw):
+    g = WP["GRID1"]
+    api = make(x=g.x_m + kw.get("x_off", 0.0), y=g.y_m, z=g.z_m + kw.get("z_off", 0.0),
+               t=kw.get("t", g.tilt_deg), r=kw.get("r", g.rot_deg))
+    rep = positioner(api).go_to_grid("GRID1")
+    assert rep.reached and _visited_clem(api)
+
+
+def test_at_other_grid_goes_via_clem():
+    g2 = WP["GRID2"]
+    api = make(x=g2.x_m, y=g2.y_m, z=g2.z_m, t=g2.tilt_deg, r=g2.rot_deg)
+    rep = positioner(api).go_to_grid("GRID1")
+    assert rep.reached and _visited_clem(api)
+
+
+def test_direct_move_still_asks_for_confirmation():
+    g = WP["GRID1"]
+    api = make(x=g.x_m + 0.0001, y=g.y_m, z=g.z_m, t=g.tilt_deg, r=g.rot_deg)
+    asked = []
+    positioner(api).go_to_grid("GRID1", confirm=lambda d: (asked.append(d), True)[1])
+    assert len(asked) == 1 and "GRID1" in asked[0]
+
+
+def test_direct_move_still_refuses_with_gis_needle_inserted():
+    g = WP["GRID1"]
+    api = make(x=g.x_m, y=g.y_m, z=g.z_m + 0.0006, t=g.tilt_deg, r=g.rot_deg)
+    api.set_gis_needle(1, NEEDLE_INSERTED)
+    with pytest.raises(StageSafetyError):
+        positioner(api).go_to_grid("GRID1")
+    assert api.stage_moves == []

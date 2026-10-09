@@ -6,6 +6,7 @@ Suites:
     test_autofocus     -- pure core: metrics, sweep planning, refinement, search
     test_real_data     -- replays measured curves from REAL Crossbeam 550 FIB images
     test_scope_source  -- the real instrument path against a mock SmartSEM
+    test_mag_before_grab -- mag is ensured+verified before every image (post-mill bug)
 
 None of these need hardware, pywin32, or a display.
 """
@@ -16,10 +17,11 @@ import sys
 
 
 def main() -> int:
-    from . import test_autofocus, test_real_data, test_scope_source
+    from . import test_mag_before_grab, test_autofocus, test_real_data, test_scope_source
 
     total_failed = 0
-    for mod in (test_autofocus, test_real_data, test_scope_source):
+    for mod in (test_autofocus, test_real_data, test_scope_source,
+                test_mag_before_grab):
         name = mod.__name__.rsplit(".", 1)[-1]
         print(f"\n{'=' * 60}\n{name}\n{'=' * 60}")
         total_failed += mod._run_all()

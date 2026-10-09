@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Tuple
 
 from .scope import PrepScope
 
@@ -33,10 +33,19 @@ SEM_TARGET_CURRENT_A = 20.0e-12  # 20 pA; AP_IPROBE takes the NUMBER (it also ha
 CLEM_SAFE_NAME = "CLEM SAFE"
 CRYO_INSERTION_NAME = "Cryo Insertion"
 
-# EHT-off confirmation
+# EHT-off confirmation. BOTH must hold, continuously, for EHT_OFF_STABLE_S before any
+# valve is touched (HT must be off before the column valve closes):
+#   * DP_RUNUPSTATE ("Beam State", API manual 6.2.3) reads "EHT Off" (state 10);
+#   * AP_ACTUALKV (EHT volts) <= EHT_OFF_THRESHOLD_V.
+# AP_ACTUALKV alone was NOT enough: on 2026-09-25 it fell below 50 V while the EHT
+# was still switching off, and the valve was closed too early. The state names are
+# from the manual -- the log prints every state seen so they can be confirmed.
 EHT_OFF_THRESHOLD_V = 50.0
-EHT_OFF_TIMEOUT_S = 120.0
+EHT_OFF_TIMEOUT_S = 180.0
+EHT_OFF_STABLE_S = 3.0
 EHT_POLL_S = 0.5
+RUNUP_EHT_OFF_NAMES = ("eht off",)
+RUNUP_EHT_OFF_CODE = 10
 
 # Stage
 STAGE_IDLE_TIMEOUT_S = 180.0
@@ -67,18 +76,57 @@ def _wait(scope: PrepScope, pred, *, timeout_s, poll_s, clock_sleep, clock_now):
     return False
 
 
-def _wait_eht_off(scope: PrepScope, log, sleep, now) -> bool:
+def _beam_state(scope: PrepScope):
+    """(is_eht_off, label) from DP_RUNUPSTATE; label None if unreadable. The name
+    is used when available; the number only as a fallback, and only code 10 counts
+    (a stale or failed numeric read of 0 must never read as 'off')."""
+    name = scope.get_str("DP_RUNUPSTATE")
+    if name:
+        if name.isdigit():
+            return int(name) == RUNUP_EHT_OFF_CODE, f"code {name}"
+        return name.strip().lower() in RUNUP_EHT_OFF_NAMES, name
+    code = scope.get_float("DP_RUNUPSTATE")
+    if code is None:
+        return False, None
+    c = int(round(code))
+    return c == RUNUP_EHT_OFF_CODE, f"code {c}"
+
+
+def _wait_eht_off(scope: PrepScope, log, sleep, now) -> Tuple[bool, str]:
+    """Wait until DP_RUNUPSTATE = EHT Off AND AP_ACTUALKV <= threshold, both held
+    for EHT_OFF_STABLE_S. Returns (ok, reason)."""
     if not scope.armed:
-        log("    [dry-run] would wait for AP_ACTUALKV to fall below "
-            f"{EHT_OFF_THRESHOLD_V:.0f} V")
-        return True
-
-    def off():
+        log(f"    [dry-run] would wait for DP_RUNUPSTATE = 'EHT Off' AND AP_ACTUALKV "
+            f"<= {EHT_OFF_THRESHOLD_V:.0f} V, both held {EHT_OFF_STABLE_S:.0f} s")
+        return True, ""
+    t0 = now()
+    off_since = None
+    last_label, ever_read = object(), False
+    kv = None
+    label = None
+    while now() - t0 < EHT_OFF_TIMEOUT_S:
+        state_off, label = _beam_state(scope)
         kv = scope.get_float("AP_ACTUALKV")
-        return kv is not None and abs(kv) <= EHT_OFF_THRESHOLD_V
-
-    return _wait(scope, off, timeout_s=EHT_OFF_TIMEOUT_S, poll_s=EHT_POLL_S,
-                 clock_sleep=sleep, clock_now=now)
+        ever_read = ever_read or label is not None
+        kv_off = kv is not None and abs(kv) <= EHT_OFF_THRESHOLD_V
+        if label != last_label:
+            log(f"   Beam State (DP_RUNUPSTATE) = {label!r}, AP_ACTUALKV = "
+                f"{'?' if kv is None else f'{kv:.0f} V'}  (t = {now() - t0:.1f} s)")
+            last_label = label
+        if state_off and kv_off:
+            if off_since is None:
+                off_since = now()
+            if now() - off_since >= EHT_OFF_STABLE_S:
+                return True, ""
+        else:
+            off_since = None
+        sleep(EHT_POLL_S)
+    if not ever_read:
+        return False, ("could not read DP_RUNUPSTATE (Beam State), so EHT off cannot be "
+                       "confirmed")
+    return False, (f"EHT not confirmed off within {EHT_OFF_TIMEOUT_S:.0f} s "
+                   f"(Beam State {label!r}, AP_ACTUALKV "
+                   f"{'?' if kv is None else f'{kv:.0f} V'})")
 
 
 def _wait_stage_idle(scope: PrepScope, log, sleep, now) -> bool:
@@ -230,12 +278,14 @@ def run_prep_cryo(sem, db, *, armed: bool = False,
     # 1) EHT off -> wait -> close column valve
     log("1) SEM EHT off")
     scope.execute("CMD_EHT_OFF")
-    if not _wait_eht_off(scope, log, clock_sleep, clock_now):
-        kv = scope.get_float("AP_ACTUALKV")
-        return PrepResult(False, f"EHT did not turn off (AP_ACTUALKV={kv}); aborting "
+    eht_ok, eht_why = _wait_eht_off(scope, log, clock_sleep, clock_now)
+    if not eht_ok:
+        return PrepResult(False, f"EHT did not turn off ({eht_why}); aborting "
                                  f"before valves/stage.", steps_done=done)
     done.append("eht_off")
-    log("   EHT confirmed off. Closing column chamber valve.")
+    log(f"   EHT confirmed off (Beam State 'EHT Off' and AP_ACTUALKV <= "
+        f"{EHT_OFF_THRESHOLD_V:.0f} V, held {EHT_OFF_STABLE_S:.0f} s). Closing column "
+        f"chamber valve.")
     scope.execute("CMD_CLOSE_COL_CHAMBER_VALVE")
     cv = scope.get_float("DP_COLUMN_CHAMBER_VALVE")
     if cv is not None:

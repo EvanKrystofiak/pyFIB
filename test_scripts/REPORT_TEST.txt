@@ -1,0 +1,62 @@
+SESSION REPORT, RUN LOG + AFTER-MILL IMAGE CHECK (pyFIB v0.43.2)
+==============================================================================
+
+The report reads files only and never connects to the microscope, so Part 1 can run
+on any PC with pyFIB on it. Part 2 is the only part that adds a microscope action.
+Run from a command prompt in the pyFIB folder (the one containing smartfib_executor\).
+
+
+PART 1 -- report from the 2026-10-01 session (no microscope)            3 min
+
+    python -m smartfib_executor.report positions\session_20261001_170335
+
+  It prints "Report: ...\report_<time>.html (21 positions, 21 milled, of which 21
+  assumed (no run log) ...)" and "Positions map for pyCLEM: ...". Open the HTML.
+  CHECK:
+    - every position shows default.ely drawn at the image centre, coloured by current
+      (key under the image; same colours as the pattern drawing), and "Milled (assumed)";
+    - the 800x image sits top right in each 2000x image, dashed box in its centre;
+    - position_7: the purple outline sits on the small milled "7";
+    - Notes box lists num_06_left.ely (position_6's fiducial record was lost: bug #11);
+    - Stage layout: positions 5, 6, 7 at the BOTTOM RIGHT, the same arrangement as the
+      800x mosaic (stage X increases to the left, Y downward). Check against an SEM
+      overview TIFF when you have one.
+    - open report_<time>_positions_map.png: same arrangement, a dot + number per position;
+    - Patterns section (v0.51.1), card "Rough . default.ely": 700/300/100/50 pA, 12 um
+      deep, widths 16.5/15/13.5/12 um, heights 2.65/1.3/0.7/0.34 um, gap 0.275 um.
+
+
+PART 2 -- after-mill image on ONE sacrificial site                     ~10 min
+          (do this before ticking it in a real batch)
+
+  Use a site you don't mind milling (e.g. a decoy or a spare position) with a fast
+  pattern, in a session folder <pf> = its positions.json.
+
+  2a) Dry run -- nothing moves:
+        python -m smartfib_executor.cli mill-positions <ely> <site> --positions-file <pf> --after-image
+      Expect the plan to include "After milling each site: grab ONE FIB frame ...".
+
+  2b) Armed, one site:
+        python -m smartfib_executor.cli mill-positions <ely> <site> --positions-file <pf> --after-image --arm
+      Expect, after "Completed milling at <site>":
+        "[1/1] after-mill image: ...\images\<site>_after_<time>.bmp"
+      then the beam-shift reset, and at the end "Run log: ...\runs\run_<time>.json".
+      The FIB scan is left FROZEN. If it prints "*** WARNING: after-mill image ...
+      skipped/FAILED ***" the site was still milled; send that line.
+
+  2c) Report for that session (as in Part 1). The site's Rough line shows a green badge
+      and its refine residual, and the image has Before / Rough buttons; the pattern
+      outline should sit on the milled trenches in the Rough image.
+
+  After that, the Mill tab box "After-mill image" can be used in real batches.
+
+
+PART 3 -- the next real batch (no extra beam time beyond 2b)
+
+  After any armed batch: <session>\runs has run_<time>.json + .log; the report shows the
+  milled sites as "Milled" with the refine result and the pattern actually milled.
+
+
+BRING BACK
+  The console output of 2b, the <site>_after_<time>.bmp, the report HTML (or a screenshot
+  of the site's section) and the <session>\runs folder.

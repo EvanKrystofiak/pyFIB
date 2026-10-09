@@ -23,14 +23,12 @@ def test_color_mode_default_is_depth(qapp):
     assert items.color_mode() == "depth"
 
 
-def test_current_ramp_is_monotonic_and_distinct(qapp):
+def test_probe_colours_are_distinct_across_the_range(qapp):
+    # categorical per probe: distinct, no hue-direction assumption
     from elymaker.gui.items import current_color
     lo = current_color(1e-11)     # 10 pA
-    mid = current_color(1e-9)     # 1 nA
+    mid = current_color(1.5e-9)   # 1.5 nA
     hi = current_color(1.5e-8)    # 15 nA
-    # blue-ish low, red-ish high
-    assert lo.blue() > lo.red()
-    assert hi.red() > hi.blue()
     assert len({lo.rgb(), mid.rgb(), hi.rgb()}) == 3
 
 

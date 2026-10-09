@@ -1,0 +1,45 @@
+SEM AUTOFOCUS TEST (pyFIB v0.39.0)                       about 15 min
+
+pyFIB's own SEM autofocus steps the SEM focus (AP_WD) and scores sharpness. It never
+runs SmartSEM's autofocus, never touches contrast/brightness or the stage, and only
+works inside WD 4-8 mm. Any failure puts WD back where it started. It scans only a
+centred box (half the width and height) at scan speed 8 and puts both back after.
+
+DONE on 2026-10-01 (v0.38.0): dry run; focus from where you are (box, scan speed 8,
+10 um steps) -> 4.9424 mm, curve 0.71; same with --full-frame -> 4.9432 mm (0.8 um
+apart). v0.39.0 makes scan speed 8, +/-60 um and 10 um steps the defaults.
+
+Run from a command prompt in the pyFIB folder (the one containing smartfib_executor\).
+Stop and send the console output if any step does something unexpected.
+
+SETUP
+  - SEM beam on, sample near coincidence (WD ~5 mm), FIB not milling.
+  - Focus the SEM roughly by hand; set contrast/brightness by hand.
+  - Auto brightness/contrast OFF. Noise Reduction: Pixel Avg or Line Avg.
+  - Normal full-frame scan to start. Store resolution 1024 * 768.
+  - A feature-rich area in the CENTRE of the image (the box is centred).
+  - Note the WD shown in SmartSEM (call it F, the in-focus WD).
+
+1) QUICK CHECK WITH THE NEW DEFAULTS                                     3 min
+     python -m smartfib_executor.sem_autofocus --arm --sem-mag 2000
+   Expect OK within ~3 um of F, about 16 frames.
+
+2) START 50 um OUT OF FOCUS                                              6 min
+   In SmartSEM set WD = F + 0.050 mm, then:
+     python -m smartfib_executor.sem_autofocus --arm --sem-mag 2000 --yes --half-range-um 80 --points 17
+   Expect OK within ~5 um of F. Repeat from F - 0.050 mm.
+
+3) GUARD CHECK: FOCUS OUTSIDE THE SWEEP                                  3 min
+   Set WD = F + 0.200 mm and run the step 2 command.
+   Expect "REJECTED ... sweep edge" and WD put back to F + 0.200 mm (the start).
+   Refocus by hand afterwards.
+
+BRING BACK
+  The sem_autofocus_<date>_<time> folders (results.json, curve.csv; the BMPs only if
+  something looks wrong) and the console output.
+
+If the summary ends with "AP_WD could NOT be confirmed back" (exit code 3): check SEM
+focus by hand before anything else, and send the output.
+
+Offline rehearsal (no microscope):
+     python -m smartfib_executor.sem_autofocus --simulate

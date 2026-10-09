@@ -236,11 +236,41 @@ class SmartSEM:
     # Stage helpers
     # ----------------------------
     def get_stage_position(self) -> StagePosition:
-        """Read stage position using GetStagePosition()."""
-        # Signature: GetStagePosition(VARIANT* x, VARIANT* y, VARIANT* z, VARIANT* t, VARIANT* r, VARIANT* m)
-        v = [win32com.client.VARIANT(pythoncom.VT_R4, 0.0) for _ in range(6)]  # type: ignore[attr-defined]
-        self._call_ok(self.api.GetStagePosition, *v)
-        vals = [float(getattr(x, "value", x)) for x in v]
+        """Read the stage position.
+
+        PRIMARY: six AP_STAGE_AT_* reads via get_float -- the path PROVEN live (prep_cryo
+        and setup_move confirmed real arrival coordinates with it).
+
+        The old implementation called GetStagePosition() and read back the passed
+        VARIANTs' .value, which stays at the initial 0.0 because win32com returns the
+        [out] values in the RETURN tuple, not by mutating the VARIANTs (the same
+        stale-VARIANT bug as get_float/get_digital/get_str). It returned six zeros,
+        which made the v0.27.0 arrival wait report "x off by <the whole target>" and
+        time out. GetStagePosition is kept only as a fallback, now capturing the
+        returned tuple.
+        """
+        try:
+            return StagePosition(
+                x_m=float(self.get_float("AP_STAGE_AT_X")),
+                y_m=float(self.get_float("AP_STAGE_AT_Y")),
+                z_m=float(self.get_float("AP_STAGE_AT_Z")),
+                tilt_deg=float(self.get_float("AP_STAGE_AT_T")),
+                rot_deg=float(self.get_float("AP_STAGE_AT_R")),
+                master_z_m=float(self.get_float("AP_STAGE_AT_M")),
+            )
+        except Exception:
+            pass
+        # Fallback: GetStagePosition(VARIANT* x..m), taking the RETURNED values.
+        if win32com is not None:
+            v = [win32com.client.VARIANT(pythoncom.VT_R4, 0.0) for _ in range(6)]  # type: ignore[attr-defined]
+            outs = self._call_ok(self.api.GetStagePosition, *v)
+        else:
+            v = []
+            outs = self._call_ok(self.api.GetStagePosition)
+        if outs and len(outs) >= 6:
+            vals = [float(o) for o in outs[:6]]
+        else:
+            vals = [float(getattr(x, "value", x)) for x in v]
         return StagePosition(vals[0], vals[1], vals[2], vals[3], vals[4], vals[5])
 
     def move_stage(self, x_m: float, y_m: float, z_m: float, t_deg: float, r_deg: float, m_m: float) -> None:
@@ -295,7 +325,14 @@ class SmartSEM:
         return None
 
     def wait_stage_idle(self, timeout_s: float = 120.0, poll_s: float = 0.25) -> None:
-        """Wait for DP_STAGE_IS to become Idle (0)."""
+        """Wait for DP_STAGE_IS to become Idle (0).
+
+        CAUTION: idle ALONE is not a safe post-move wait. MoveStage is non-blocking
+        and DP_STAGE_IS can read Idle *before* the stage starts moving, so this can
+        return mid-travel. After commanding a move, use wait_stage_arrival() with the
+        target so the read-back position is confirmed. This method is kept for callers
+        that genuinely only need "not busy".
+        """
         t0 = time.time()
         while True:
             code = self._get_stage_is_code()
@@ -303,6 +340,50 @@ class SmartSEM:
                 return
             if time.time() - t0 > timeout_s:
                 raise SmartSEMError(f"Timeout waiting for stage idle (DP_STAGE_IS). Got {code!r}.")
+            time.sleep(poll_s)
+
+    def wait_stage_arrival(self, x_m=None, y_m=None, z_m=None, t_deg=None,
+                           r_deg=None, m_m=None, *, tol_m: float = 0.3e-3,
+                           tol_deg: float = 0.05, timeout_s: float = 120.0,
+                           poll_s: float = 0.25) -> None:
+        """Wait until the stage is Idle AND its read-back position is at the target.
+
+        This is the correct post-move wait: requiring the read-back to reach the
+        commanded target (within tol) makes the premature Idle harmless -- the loop
+        keeps polling until the stage has actually arrived. Axes passed as None are
+        not checked (e.g. an axis that was not commanded). Raises SmartSEMError on
+        timeout, reporting which axis is still off.
+        """
+        targets = {"x_m": x_m, "y_m": y_m, "z_m": z_m,
+                   "tilt_deg": t_deg, "rot_deg": r_deg, "master_z_m": m_m}
+        linear = {"x_m", "y_m", "z_m", "master_z_m"}
+        t0 = time.time()
+        last_miss = "?"
+        while True:
+            code = self._get_stage_is_code()
+            pos = None
+            try:
+                pos = self.get_stage_position()
+            except Exception:
+                pos = None
+            miss = None
+            if pos is not None:
+                for k, tv in targets.items():
+                    if tv is None:
+                        continue
+                    cur = float(getattr(pos, k))
+                    tol = tol_m if k in linear else tol_deg
+                    if abs(cur - float(tv)) > tol:
+                        miss = f"{k} off by {abs(cur - float(tv)):.4g}"
+                        break
+            else:
+                miss = "position unreadable"
+            if code == 0 and miss is None:
+                return
+            last_miss = miss or "busy"
+            if time.time() - t0 > timeout_s:
+                raise SmartSEMError(
+                    f"Timeout waiting for stage arrival ({last_miss}; DP_STAGE_IS={code!r}).")
             time.sleep(poll_s)
 
     # ----------------------------

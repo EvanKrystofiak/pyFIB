@@ -26,6 +26,7 @@ from .theme import apply_theme, scale_up
 from .session import new_session_positions_path
 from .worker import SubprocessWorker, build_argv, build_module_argv
 from .pages import ArmBar, CapturePage, PositionsPage, MillPage, SetupPage, GisdepTab, ElymakerTab
+from .tools_page import ToolsPage
 
 APP_TITLE = "pyFIB"
 NAV = [
@@ -34,7 +35,10 @@ NAV = [
     ("elymaker", "ELYMaker"),
     ("capture", "Capture"),
     ("positions", "Positions"),
-    ("mill", "Mill"),
+    ("mill", "Rough Mill"),      # v0.50.0: was "Mill" (key kept: same page, same tests)
+    ("prepolish", "Prepolish"),  # v0.51.0: own pattern; aligns to the rough after image
+    ("polish", "Polish"),        # v0.51.0: own pattern; aligns to the prepolish image
+    ("tools", "Tools"),          # v0.44.0: report, SEM autofocus, FIB autofocus
     ("log", "Log"),
 ]
 
@@ -139,16 +143,22 @@ class MainWindow(QMainWindow):
         self.log_page = LogPage()
         self.capture_page = CapturePage(self)
         self.positions_page = PositionsPage(self)
-        self.mill_page = MillPage(self)
+        self.mill_page = MillPage(self, title="Rough Mill", stage="rough")
+        self.prepolish_page = MillPage(self, title="Prepolish", stage="prepolish")
+        self.polish_page = MillPage(self, title="Polish", stage="polish")
         self.setup_page = SetupPage(self)
         self.gisdep_page = GisdepTab(self)
         self.elymaker_page = ElymakerTab(self)
+        self.tools_page = ToolsPage(self)
         self._pages["setup"] = self.setup_page
         self._pages["gisdep"] = self.gisdep_page
         self._pages["elymaker"] = self.elymaker_page
         self._pages["capture"] = self.capture_page
         self._pages["positions"] = self.positions_page
         self._pages["mill"] = self.mill_page
+        self._pages["prepolish"] = self.prepolish_page
+        self._pages["polish"] = self.polish_page
+        self._pages["tools"] = self.tools_page
         self._pages["log"] = self.log_page
         for key, _ in NAV:
             self.stack.addWidget(self._pages[key])
@@ -181,14 +191,20 @@ class MainWindow(QMainWindow):
             btn.setChecked(k == key)
         if key == "positions" and self.positions_file():
             self.positions_page.reload()
-        if key == "mill" and self.positions_file():
-            self.mill_page.reload()
+        if key in ("mill", "prepolish", "polish") and self.positions_file():
+            self._pages[key].reload()
+        if key == "tools":
+            self.tools_page.on_show()
         if key == "gisdep":
             self.gisdep_page.ensure_built()
         if key == "elymaker":
             self.elymaker_page.ensure_built()
         if key == "setup" and self.positions_file():
             self.setup_page.reload_positions()
+
+    def mill_pages(self):
+        """The three milling stages, in order (v0.50.0)."""
+        return [self.mill_page, self.prepolish_page, self.polish_page]
 
     # --- shared state the pages read ---
     def is_armed(self) -> bool:
@@ -218,7 +234,8 @@ class MainWindow(QMainWindow):
         # until the first capture writes to it).
         try:
             self.positions_page.reload()
-            self.mill_page.reload()
+            for p in self.mill_pages():
+                p.reload()
             self.setup_page.reload_positions()
         except Exception:
             pass
@@ -226,17 +243,20 @@ class MainWindow(QMainWindow):
 
     # --- subprocess plumbing (the model kept from tkinter) ---
     def run_argv(self, argv: List[str], *, input_text: Optional[str] = None,
-                 on_line=None, on_done=None) -> bool:
+                 on_line=None, on_done=None, show_log: bool = True) -> bool:
         """Launch any argv on the worker, streaming stdout to the Log page.
 
         ``on_line`` also receives each line (pages use it for live status parsing);
         ``on_done`` gets the return code. This is the shared core for run_cli /
-        run_module -- the subprocess model, unchanged.
+        run_module -- the subprocess model, unchanged. show_log=False (v0.51.0, the
+        milling tabs' manual buttons) keeps the current page on screen; the output still
+        goes to the Log page.
         """
         if self._worker is not None and self._worker.isRunning():
             self.statusBar().showMessage("A command is already running")
             return False
-        self.show_page("log")
+        if show_log:
+            self.show_page("log")
         self._worker = SubprocessWorker(argv, input_text=input_text)
         self._worker.line.connect(self.log_page.append)
         if on_line is not None:
@@ -250,10 +270,10 @@ class MainWindow(QMainWindow):
         return True
 
     def run_cli(self, subcmd_args: List[str], *, input_text: Optional[str] = None,
-                on_line=None, on_done=None) -> bool:
+                on_line=None, on_done=None, show_log: bool = True) -> bool:
         """Launch a pyFIB CLI subcommand (python -u -m smartfib_executor.cli ...)."""
         return self.run_argv(build_argv(subcmd_args), input_text=input_text,
-                             on_line=on_line, on_done=on_done)
+                             on_line=on_line, on_done=on_done, show_log=show_log)
 
     def run_module(self, module: str, args: List[str], *,
                    input_text: Optional[str] = None, on_line=None, on_done=None) -> bool:

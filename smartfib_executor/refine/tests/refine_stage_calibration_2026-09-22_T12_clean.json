@@ -1,0 +1,48 @@
+{
+  "magnification": 2000.0,
+  "image_width_px": 1024,
+  "nominal_pixel_size_m": 5.5810546875e-08,
+  "tilt_deg": 12.043852806091309,
+  "rot_deg": 11.99998950958252,
+  "axes": {
+    "x": {
+      "axis": "x",
+      "commanded_step_m": 1.9999999999999998e-05,
+      "achieved_step_m": 2.0001083612442017e-05,
+      "dx_px": 331.1842203364416,
+      "dy_px": 4.604484896751432,
+      "response": 1.0,
+      "response_raw": 0.924128552807473,
+      "measured_pixel_size_m": 6.039262254742519e-08,
+      "crosstalk_px": 4.604484896751432,
+      "snr": 81.07685436924271,
+      "ok": true,
+      "note": "",
+      "return_dx_px": 1.6187619803155835,
+      "return_dy_px": 0.11444899559483335,
+      "return_offset_m": 9.056951163201261e-08
+    },
+    "y": {
+      "axis": "y",
+      "commanded_step_m": 1.9999999999999998e-05,
+      "achieved_step_m": 1.9997358322143555e-05,
+      "dx_px": 3.426675783998645,
+      "dy_px": -253.25521810377313,
+      "response": -1.0,
+      "response_raw": -0.7068089691460755,
+      "measured_pixel_size_m": 7.896128842624477e-08,
+      "crosstalk_px": 3.426675783998645,
+      "snr": 66.1474069128014,
+      "ok": true,
+      "note": "",
+      "return_dx_px": -0.4886972791893839,
+      "return_dy_px": -0.06563401047110963,
+      "return_offset_m": 2.751934558807302e-08
+    }
+  },
+  "correction_signs": [
+    -1.0,
+    1.0
+  ],
+  "rotation_hint_deg": 0.7965372107028361
+}

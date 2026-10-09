@@ -60,6 +60,11 @@ that file directly, and you are warned that its coordinates predate the current 
 stage baseline. **New Session** starts a fresh empty file at any time. Passing an explicit
 `--positions-file C:\temp\positions.json` still opens that specific file.
 
+**Tools tab** (Qt UI, v0.44.0; between Mill and Log): **Make report** (the session report
+for the positions file in the top bar; reads files only), **SEM autofocus** and **FIB
+autofocus** at the current position. Unarmed, the autofocus buttons only check and plan
+(FIB: dry run); armed, each asks for confirmation first.
+
 Notes:
 - The UI is **dry-run** unless you enable the global **ARM** safety switch.
 - BMP preview requires **Pillow** (installed by requirements.txt).
@@ -129,11 +134,13 @@ python -m pyfib goto-position position_1 --positions-file C:\temp\positions.json
 ```
 
 Stage movement can be requested by:
+- `--move-method movestage` (calls `MoveStage(x,y,z,t,r,m)`) -- the DEFAULT since v0.38.0.
+  Tilt is the recorded tilt if the position has one, otherwise the current tilt (unchanged);
+  if neither is known the recall refuses.
 - `--move-method ap_goto` (sets `AP_STAGE_GOTO_*` targets)
-- `--move-method movestage` (calls `MoveStage(x,y,z,t,r,m)`)
 
-Whether `AP_STAGE_GOTO_*` immediately triggers motion depends on your microscope configuration.
-`MoveStage()` is the most explicit method.
+On the Crossbeam 550 (2026-10-01) `AP_STAGE_GOTO_*` did not move the stage for a 14 um
+recall, while `MoveStage()` did; that is why `movestage` is the default.
 
 ### Recall a position and then mill a pattern
 
@@ -184,6 +191,35 @@ By default it stops on the first error. To continue past failures:
 python -m pyfib mill-positions examples\Py_Cross.ely --positions-file C:\temp\positions.json --arm --continue-on-error
 ```
 
+### Milling stages: Rough Mill -> Prepolish -> Polish (v0.51.0)
+
+Rough mill every lamella, then prepolish them, then polish them -- each as a batch or
+site by site. `--stage` picks the stage's pattern rule, refine reference and after-image
+name (images\<pos>_1-rough_<t>.bmp, _2-prepolish_, _3-polish_; the latest of each is
+recorded in positions.json):
+
+```
+python -m pyfib mill-positions rough.ely --positions-file S\positions.json --stage rough --refine-all --arm
+python -m pyfib mill-positions prepolish.ely --positions-file S\positions.json --stage prepolish --refine-all --arm
+python -m pyfib mill-positions polish.ely --positions-file S\positions.json --stage polish --refine-all --arm
+```
+
+Prepolish/Polish mill the given pattern at every position (never the authored rough one)
+and refine to the previous stage's latest after image; a position without it is listed
+and not milled (OK with `--accept-reference-skips NAMES`, otherwise nothing moves).
+
+One position by hand (dry run without `--arm`):
+
+```
+python -m pyfib site goto position_12 --stage prepolish --positions-file S\positions.json --arm
+python -m pyfib site align position_12 --stage prepolish --positions-file S\positions.json --arm
+python -m pyfib site push position_12 --stage prepolish --ely prepolish.ely --positions-file S\positions.json --arm
+python -m pyfib site after-image position_12 --stage prepolish --positions-file S\positions.json --arm
+```
+
+`push` loads + prepares the pattern in SmartFIB and never starts milling: check it and
+start milling in SmartFIB, then record the after image.
+
 ### About `CMD_FIB_MODE_MILL`
 
 Some systems expose `CMD_FIB_MODE_MILL`, but in practice it is **not usually required** to run a
@@ -207,12 +243,46 @@ python -m pyfib goto-and-mill position_1 examples\Py_Cross.ely --positions-file 
 By default, this uses the SerialFIB-style SmartFIB “drop folder” mechanism to load the .ely
 into SmartFIB before starting milling.
 
+## Session report
+
+After a session (or at any time), make an HTML summary:
+
+```bat
+python -m smartfib_executor.report positions\session_20261001_170335\positions.json --pattern C:\path\to\standard_lamella.ely
+```
+
+It writes `report_<time>.html` into the session folder: every position's image with its
+pattern drawn on it, coordinates, a stage-layout plot and, for batches milled with v0.40.0
+or later, what happened at each site (from `<session>\runs\run_<time>.json`, which every
+armed `mill-positions` run now writes). The report reads files only and never connects
+to the microscope. `--pattern` is only needed for positions with no milling record and no
+authored pattern; without it, positions with no record get pyFIB's default pattern
+(`smartfib_executor\assets\patterns\default.ely`) and are shown as "Milled (assumed)".
+
+The report also writes `report_<time>_positions_map.png/.tif/.json/.csv` for pyCLEM: the
+positions as dots on a calibrated image (1 um per pixel by default), with stage X
+increasing to the left and Y downward, as in the Crossbeam images and the 800x mosaic.
+Positions captured at a different stage Z are drawn where they sit on the grid (measured
+Z correction, tilt ~2 deg and R 12 deg only; elsewhere the report warns). After the stage layout it draws the
+standard pattern with the current, depth, width and height of each part. Add `--mosaic`
+for a quarter-size mosaic of the 800x images placed by stage position (off by default).
+
+To get before/after pictures, tick **After-mill image** in any milling tab (Rough Mill, Prepolish, Polish) (or add
+`--after-image` to `mill-positions`): one FIB frame per site after milling, saved as
+`images\<name>_after_<time>.bmp`. It is off by default (one frame of ion dose per site).
+
 ## Safety
 
 This software can start milling and change beam parameters.
 
 - **Default is dry-run**. You must pass `--arm` to execute instrument-affecting actions.
 - You are responsible for verifying that your microscope is in a safe state before running.
+- **Mill batches: 2 deg tilt limit (v0.46.0).** A batch mills only positions whose
+  recorded tilt is within 2 deg of the current stage tilt (and of the previous site).
+  Others are listed before any motion and are not milled; the batch starts only after
+  you OK that list (milling-tab dialog, terminal prompt, or `--accept-tilt-skips NAMES`).
+  `mill-positions ... --tilt-check` shows the list read-only. Other stage moves (setup,
+  GISDEP, goto) are not limited. Large tilt changes: by hand or via CLEM SAFE.
 
 ## Waiting for milling to finish
 

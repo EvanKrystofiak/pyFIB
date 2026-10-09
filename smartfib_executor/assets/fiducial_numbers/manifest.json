@@ -1,0 +1,195 @@
+{
+ "tool": "ely_numbers",
+ "version": "0.3.0",
+ "set": "plain",
+ "pixel_um": 0.02,
+ "canvas_um": 10.0,
+ "canvas_px": 500,
+ "height_um": 6.0,
+ "stroke_um": 0.5,
+ "gap_um": 0.9,
+ "white_is_milled": true,
+ "convention": "origin=centre, +X right, +Y up, top row=+Y",
+ "numbers": {
+  "1": {
+   "file": "num_01_plain_20nm",
+   "width_um": 2.4,
+   "milled_area_um2": 3.39,
+   "verified_loop_free": true
+  },
+  "2": {
+   "file": "num_02_plain_20nm",
+   "width_um": 3.4,
+   "milled_area_um2": 3.459,
+   "verified_loop_free": true
+  },
+  "3": {
+   "file": "num_03_plain_20nm",
+   "width_um": 3.4,
+   "milled_area_um2": 3.459,
+   "verified_loop_free": true
+  },
+  "4": {
+   "file": "num_04_plain_20nm",
+   "width_um": 3.4,
+   "milled_area_um2": 2.658,
+   "verified_loop_free": true
+  },
+  "5": {
+   "file": "num_05_plain_20nm",
+   "width_um": 3.4,
+   "milled_area_um2": 3.459,
+   "verified_loop_free": true
+  },
+  "6": {
+   "file": "num_06_plain_20nm",
+   "width_um": 3.4,
+   "milled_area_um2": 4.104,
+   "verified_loop_free": true
+  },
+  "7": {
+   "file": "num_07_plain_20nm",
+   "width_um": 3.4,
+   "milled_area_um2": 2.013,
+   "verified_loop_free": true
+  },
+  "8": {
+   "file": "num_08_plain_20nm",
+   "width_um": 3.4,
+   "milled_area_um2": 4.749,
+   "verified_loop_free": true
+  },
+  "9": {
+   "file": "num_09_plain_20nm",
+   "width_um": 3.4,
+   "milled_area_um2": 4.104,
+   "verified_loop_free": true
+  },
+  "10": {
+   "file": "num_10_plain_20nm",
+   "width_um": 4.9,
+   "milled_area_um2": 5.314,
+   "verified_loop_free": true
+  },
+  "11": {
+   "file": "num_11_plain_20nm",
+   "width_um": 2.0,
+   "milled_area_um2": 2.579,
+   "verified_loop_free": true
+  },
+  "12": {
+   "file": "num_12_plain_20nm",
+   "width_um": 4.9,
+   "milled_area_um2": 4.746,
+   "verified_loop_free": true
+  },
+  "13": {
+   "file": "num_13_plain_20nm",
+   "width_um": 4.9,
+   "milled_area_um2": 4.746,
+   "verified_loop_free": true
+  },
+  "14": {
+   "file": "num_14_plain_20nm",
+   "width_um": 4.9,
+   "milled_area_um2": 3.946,
+   "verified_loop_free": true
+  },
+  "15": {
+   "file": "num_15_plain_20nm",
+   "width_um": 4.9,
+   "milled_area_um2": 4.746,
+   "verified_loop_free": true
+  },
+  "16": {
+   "file": "num_16_plain_20nm",
+   "width_um": 4.9,
+   "milled_area_um2": 5.391,
+   "verified_loop_free": true
+  },
+  "17": {
+   "file": "num_17_plain_20nm",
+   "width_um": 4.9,
+   "milled_area_um2": 3.302,
+   "verified_loop_free": true
+  },
+  "18": {
+   "file": "num_18_plain_20nm",
+   "width_um": 4.9,
+   "milled_area_um2": 6.036,
+   "verified_loop_free": true
+  },
+  "19": {
+   "file": "num_19_plain_20nm",
+   "width_um": 4.9,
+   "milled_area_um2": 5.391,
+   "verified_loop_free": true
+  },
+  "20": {
+   "file": "num_20_plain_20nm",
+   "width_um": 7.8,
+   "milled_area_um2": 7.485,
+   "verified_loop_free": true
+  },
+  "21": {
+   "file": "num_21_plain_20nm",
+   "width_um": 4.9,
+   "milled_area_um2": 4.746,
+   "verified_loop_free": true
+  },
+  "22": {
+   "file": "num_22_plain_20nm",
+   "width_um": 7.8,
+   "milled_area_um2": 6.918,
+   "verified_loop_free": true
+  },
+  "23": {
+   "file": "num_23_plain_20nm",
+   "width_um": 7.8,
+   "milled_area_um2": 6.918,
+   "verified_loop_free": true
+  },
+  "24": {
+   "file": "num_24_plain_20nm",
+   "width_um": 7.8,
+   "milled_area_um2": 6.117,
+   "verified_loop_free": true
+  },
+  "25": {
+   "file": "num_25_plain_20nm",
+   "width_um": 7.8,
+   "milled_area_um2": 6.918,
+   "verified_loop_free": true
+  },
+  "26": {
+   "file": "num_26_plain_20nm",
+   "width_um": 7.8,
+   "milled_area_um2": 7.563,
+   "verified_loop_free": true
+  },
+  "27": {
+   "file": "num_27_plain_20nm",
+   "width_um": 7.8,
+   "milled_area_um2": 5.472,
+   "verified_loop_free": true
+  },
+  "28": {
+   "file": "num_28_plain_20nm",
+   "width_um": 7.8,
+   "milled_area_um2": 8.208,
+   "verified_loop_free": true
+  },
+  "29": {
+   "file": "num_29_plain_20nm",
+   "width_um": 7.8,
+   "milled_area_um2": 7.563,
+   "verified_loop_free": true
+  },
+  "30": {
+   "file": "num_30_plain_20nm",
+   "width_um": 7.8,
+   "milled_area_um2": 7.485,
+   "verified_loop_free": true
+  }
+ }
+}

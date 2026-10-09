@@ -1,0 +1,38 @@
+TOOLS TAB CHECK (pyFIB v0.44.0)                                 about 15 min
+==============================================================================
+
+Start the UI as usual (python -m pyfib ui, or your usual launcher). Tools is the tab
+between Mill and Log. Every button prints to the Log tab. Stop and send the Log text if
+anything does something unexpected.
+
+
+1) MAKE REPORT (no microscope involved)                                   1 min
+   Top bar: load a session that has positions (Load Previous...).
+   Tools -> Make report. Expect "Report: ...\report_<time>.html" in the Log and the
+   report opening in your browser. Works with ARM on or off.
+
+
+2) SEM AUTOFOCUS                                                           5 min
+   Same setup as SEM_AUTOFOCUS_TEST.txt step 1 (SEM beam on, near focus, feature in the
+   centre, contrast/brightness set by hand, auto B/C off).
+   a) ARM OFF -> SEM autofocus. Expect the read-only checks and the plan, ending
+      "Nothing was changed. Add --arm to focus."
+   b) ARM ON -> SEM autofocus -> answer Yes. Expect "OK" within ~3 um of the focus you
+      set by hand; frames and results.json go into the session folder
+      (sem_autofocus_<time>).
+
+
+3) FIB AUTOFOCUS                                                         10 min
+   FIB at the site's capture conditions, on an area you don't mind imaging.
+   a) Check the bounds: "From last position" fills last capture's objective +/- 400 V.
+      The current objective voltage (SmartSEM) must lie inside them.
+   b) ARM OFF -> FIB autofocus. Expect only "(dry-run) would ..." lines: NOTHING on the
+      column changes (check beam shift, mag and objective in SmartSEM afterwards).
+   c) ARM ON -> FIB autofocus -> Yes. Expect a sweep of 7 + fine points and
+      "best voltage ...". Afterwards the FIB beam shift X is back to 0 and the scan is
+      full-frame. This is the first live run of the standalone FIB autofocus from the
+      UI: watch it, and use SmartSEM to stop if anything looks wrong.
+
+
+BRING BACK
+  The Log text of 2b and 3b/3c, and results.json from 2b.

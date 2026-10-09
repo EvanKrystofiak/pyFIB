@@ -28,6 +28,10 @@ from typing import Optional, Tuple
 
 import numpy as np
 
+# Relative tolerance when verifying AP_FIB_MAGNIFICATION read-back (SmartFIB may
+# report a marginally different value than was set).
+MAG_VERIFY_REL_TOL = 0.01
+
 try:  # Pillow is a project dependency; used to read grabbed BMPs and to blur sims.
     from PIL import Image, ImageFilter  # type: ignore
     _HAVE_PIL = True
@@ -511,11 +515,14 @@ class ScopeImageSource(ImageSource):
             self._prepared = True
             return
 
-        # 1) Magnification -- the same mnemonic the main workflow writes.
+        # 1) Magnification -- the same mnemonic the main workflow writes. ORDER
+        #    MATTERS: get into FIB imaging mode FIRST (SmartFIB keeps separate
+        #    imaging/milling mags, so a set issued while still in post-milling mode
+        #    does not stick), then set and READ BACK to verify. The pixel size read
+        #    below depends on this mag being real.
         if self.fib_magnification is not None:
-            mag = float(self.fib_magnification)
-            self._log(f"[autofocus] set AP_FIB_MAGNIFICATION = {mag:.6g}")
-            self._sem.set_value("AP_FIB_MAGNIFICATION", mag)
+            _ensure_fib_imaging(self._sem)
+            self._assert_magnification("at prepare")
 
         # Live pixel size (exact; falls back to the constant if unavailable) and a
         # scan-rotation guard (the raster-side geometry assumes image==beam axes).
@@ -778,6 +785,44 @@ class ScopeImageSource(ImageSource):
         # Let the objective lens actually reach the new value before imaging.
         time.sleep(self.settle_s)
 
+    def _assert_magnification(self, where: str = "") -> None:
+        """Set AP_FIB_MAGNIFICATION to the position's mag and VERIFY it took.
+
+        Milling and FIB mode switches change the FIB magnification (SmartFIB keeps
+        separate imaging/milling mags), and a bare set issued before the column is in
+        FIB imaging mode can fail to stick. So: ensure imaging mode first (caller),
+        set the mag, then READ IT BACK and retry once if it does not match. Runs
+        before every grab, not just once at prepare -- a frame at the wrong mag would
+        silently corrupt the focus metric and the pixel-size geometry.
+        """
+        if self.fib_magnification is None or self.dry_run:
+            return
+        target = float(self.fib_magnification)
+        for attempt in range(2):
+            self._sem.set_value("AP_FIB_MAGNIFICATION", target)
+            time.sleep(0.2)
+            try:
+                actual = float(self._sem.get_float("AP_FIB_MAGNIFICATION"))
+            except Exception:
+                actual = None
+            if actual is None:
+                # Readback unavailable on this instrument/mock: we set it, but cannot
+                # verify. Proceed (the pre-fix behaviour) rather than refuse.
+                self._log(f"[autofocus] set AP_FIB_MAGNIFICATION = {target:.6g} "
+                          f"(readback unavailable; not verified)")
+                return
+            if abs(actual - target) <= MAG_VERIFY_REL_TOL * target:
+                if attempt:
+                    self._log(f"[autofocus] magnification re-asserted to {target:.6g}"
+                              f"{(' ' + where) if where else ''}")
+                return
+            self._log(f"[autofocus] WARNING: AP_FIB_MAGNIFICATION read back "
+                      f"{actual} but wanted {target:.6g}{(' ' + where) if where else ''}"
+                      f" -- re-setting.")
+        raise RuntimeError(
+            f"could not establish FIB magnification {target:.6g} (read back {actual}); "
+            f"refusing to grab at the wrong mag.")
+
     def grab(self) -> np.ndarray:
         if self.dry_run:
             self._log("[autofocus] (dry-run) would grab a FIB frame")
@@ -786,6 +831,8 @@ class ScopeImageSource(ImageSource):
             raise RuntimeError("Pillow is required to read grabbed BMP images.")
 
         _ensure_fib_imaging(self._sem)
+        # Check the mag before EVERY image: milling / mode switches can change it.
+        self._assert_magnification("before grab")
 
         # ORDER MATTERS. Grabbing straight after unfreeze returns the PREVIOUS
         # frame: the framestore needs a full cycle (~1.3 s here) to refresh, and

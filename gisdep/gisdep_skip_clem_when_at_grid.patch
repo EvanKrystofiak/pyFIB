@@ -1,0 +1,173 @@
+--- /tmp/claude-0/-home-claude/69f62cf6-b3b8-53e0-840f-bf0e3c5faf39/scratchpad/gorig/gisdep_v0.16.1/gisdep/stage/cryo.py	2026-09-06 09:06:12.000000000 -0500
++++ gisdep/stage/cryo.py	2026-09-30 15:46:55.035961838 -0500
+@@ -1,7 +1,9 @@
+ """Cryo stage positioning -- the FIRST step, before autofocus / WD / GIS deposition.
+ 
+-Drives the cryostage to a grid position for GIS deposition, always via the CLEM SAFE
+-waypoint, with the axis ordering Evan specified as safest for big stage moves:
++Drives the cryostage to a grid position for GIS deposition via the CLEM SAFE
++waypoint -- unless the stage is already at (or right beside) that grid, in which case
++the detour is skipped (pyFIB patch v0.36.0; see NEAR_*) -- with the axis ordering Evan
++specified as safest for big stage moves:
+ 
+   1. To CLEM SAFE: move Z FIRST, then X, Y, T, R.   (M is NEVER moved.)
+   2. Verify CLEM SAFE by reading back the stage position.
+@@ -31,6 +33,17 @@
+ _log = logging.getLogger("gisdep.stage.cryo")
+ 
+ _XYTR = ("x", "y", "t", "r")
++
++# "Already at the grid" -> skip the CLEM SAFE detour (pyFIB patch, v0.36.0). The stage
++# counts as at the grid when X/Y are within NEAR_XY_M (the rule pyFIB's setup_move
++# uses), T/R within NEAR_DEG (no tilt/rotation swing), and Z within NEAR_Z_M -- one
++# WD-step cap (StageMoveConfig.max_delta_m), so a previous run's WD adjustment still
++# counts as "there". It then moves straight to the waypoint (X,Y,T,R first, then Z):
++# the only sizeable move is Z returning to the recorded, validated grid Z. Anything
++# further away goes via CLEM SAFE exactly as before.
++NEAR_XY_M = 0.3e-3
++NEAR_Z_M = 1.0e-3
++NEAR_DEG = 0.1
+ _FIELD = {"x": "x_m", "y": "y_m", "z": "z_m", "t": "tilt_deg", "r": "rot_deg"}
+ 
+ 
+@@ -131,6 +144,26 @@
+                     f"(M not moved)"
+                 )
+ 
++        # Already at (or right beside) this grid? Then skip the CLEM SAFE detour.
++        here = self.mover.read()
++        near = self._near(here, grid)
++        if near:
++            if self._at(here, grid):
++                self.log.info("cryo: already at %s (within verify tolerance); no move",
++                              grid_name)
++                steps.append(f"already at {grid_name}: no move, CLEM SAFE skipped")
++            else:
++                self.log.info("cryo: already beside %s (%s); CLEM SAFE skipped, moving "
++                              "direct (X,Y,T,R first, then Z)", grid_name, near)
++                steps.append(f"near {grid_name} ({near}): CLEM SAFE skipped")
++                self._gate(confirm, grid_name, grid)
++                self._move_axes(_XYTR, grid, steps, f"{grid_name} X,Y,T,R")
++                self._move_axes(("z",), grid, steps, f"{grid_name} Z")
++            self._verify_at(grid, grid_name)
++            steps.append(f"{grid_name} reached and verified")
++            return CryoMoveReport(grid_name, steps, self.mover.read(), True, placeholders,
++                                  m_current_m=m_now, m_ref_m=m_ref, m_matches=m_matches)
++
+         # Phase A -- to CLEM SAFE: ONE confirmation for the whole move (Z first, then
+         # X,Y,T,R). M never moves.
+         self._gate(confirm, "CLEM SAFE", clem)
+@@ -152,6 +185,26 @@
+                               m_current_m=m_now, m_ref_m=m_ref, m_matches=m_matches)
+ 
+     # --- helpers -----------------------------------------------------------
++    @staticmethod
++    def _near(pos: StagePosition, wp: CryoWaypoint) -> str:
++        """Non-empty description if pos is beside waypoint wp (see NEAR_*), else ''."""
++        dx, dy = abs(pos.x_m - wp.x_m), abs(pos.y_m - wp.y_m)
++        dz = abs(pos.z_m - wp.z_m)
++        dt, dr = abs(pos.tilt_deg - wp.tilt_deg), abs(pos.rot_deg - wp.rot_deg)
++        dr = min(dr, 360.0 - dr)
++        if dx <= NEAR_XY_M and dy <= NEAR_XY_M and dz <= NEAR_Z_M \
++                and dt <= NEAR_DEG and dr <= NEAR_DEG:
++            return (f"dX {dx*1e3:.3f} dY {dy*1e3:.3f} dZ {dz*1e3:.3f} mm, "
++                    f"dT {dt:.3f} dR {dr:.3f} deg")
++        return ""
++
++    def _at(self, pos: StagePosition, wp: CryoWaypoint) -> bool:
++        tm, td = self.cfg.verify_tol_m, self.cfg.verify_tol_deg
++        dr = abs(pos.rot_deg - wp.rot_deg); dr = min(dr, 360.0 - dr)
++        return (abs(pos.x_m - wp.x_m) <= tm and abs(pos.y_m - wp.y_m) <= tm
++                and abs(pos.z_m - wp.z_m) <= tm
++                and abs(pos.tilt_deg - wp.tilt_deg) <= td and dr <= td)
++
+     def _gate(self, confirm, name: str, wp: CryoWaypoint) -> None:
+         if confirm is None:
+             return
+--- /tmp/claude-0/-home-claude/69f62cf6-b3b8-53e0-840f-bf0e3c5faf39/scratchpad/gorig/gisdep_v0.16.1/gisdep/orchestrate/full_run.py	2026-09-06 09:06:12.000000000 -0500
++++ gisdep/orchestrate/full_run.py	2026-09-30 15:46:55.036270005 -0500
+@@ -126,7 +126,8 @@
+     log.info("=== FULL RUN: %s, GIS%d, dwell %.1fs ===", grid_name, port, dwell_s)
+ 
+     _check_abort()
+-    log.info("STEP 1: cryo positioning -> %s (via CLEM SAFE)", grid_name)
++    log.info("STEP 1: cryo positioning -> %s (via CLEM SAFE unless already there)",
++             grid_name)
+     cryo = CryoPositioner(api, waypoints=waypoints, clock=clock, log=log).go_to_grid(
+         grid_name, confirm=confirm, abort=abort
+     )
+--- /tmp/claude-0/-home-claude/69f62cf6-b3b8-53e0-840f-bf0e3c5faf39/scratchpad/gorig/gisdep_v0.16.1/tests/test_cryo.py	2026-09-06 09:06:12.000000000 -0500
++++ gisdep_tests/test_cryo.py	2026-09-30 15:47:18.379232011 -0500
+@@ -158,3 +158,72 @@
+     assert any("WARNING" in s and "M" in s for s in rep.steps)
+     # M is preserved at the current 10 mm -- never moved to 12.99
+     assert api.get_stage_position().m_m == pytest.approx(0.010, abs=1e-9)
++
++
++# ---- pyFIB patch v0.36.0: skip the CLEM SAFE detour when already at the grid ---- #
++def _visited_clem(api):
++    return any(abs(mv[2] - WP["CLEM_SAFE"].z_m) < 1e-6 for mv in api.stage_moves)
++
++
++def test_already_at_grid_makes_no_move():
++    g = WP["GRID1"]
++    api = make(x=g.x_m, y=g.y_m, z=g.z_m, t=g.tilt_deg, r=g.rot_deg)
++    rep = positioner(api).go_to_grid("GRID1")
++    assert rep.reached and api.stage_moves == []
++    assert any("CLEM SAFE skipped" in s for s in rep.steps)
++
++
++def test_beside_grid_after_wd_adjust_goes_direct_not_via_clem():
++    g = WP["GRID1"]                         # Z moved 0.6 mm by a previous WD step
++    api = make(x=g.x_m, y=g.y_m, z=g.z_m + 0.0006, t=g.tilt_deg, r=g.rot_deg)
++    rep = positioner(api).go_to_grid("GRID1")
++    assert rep.reached and not _visited_clem(api)
++    pos = api.get_stage_position()
++    assert pos.z_m == pytest.approx(g.z_m, abs=1e-6)
++    assert api.stage_moves[-1][2] == pytest.approx(g.z_m, abs=1e-9)   # Z moved last
++
++
++def test_rotation_wrap_counts_as_beside():
++    WP2 = dict(WP); WP2["GRID1"] = CryoWaypoint("GRID1", 0.001, 0.002, 0.030, 30.0, 359.95)
++    api = make(x=0.001, y=0.002, z=0.030, t=30.0, r=0.0)
++    cfg = StageMoveConfig(verify_tol_m=1e-5, verify_tol_deg=0.1, idle_timeout_s=120.0)
++    p = CryoPositioner(api, waypoints=WP2, clock=api.clock, cfg=cfg)
++    assert p._near(api.get_stage_position(), WP2["GRID1"])
++
++
++@pytest.mark.parametrize("kw", [
++    dict(t=35.0),            # tilt swing needed
++    dict(r=10.0),            # rotation swing needed
++    dict(z_off=0.003),       # Z far from the grid (> 1 mm)
++    dict(x_off=0.001),       # X more than 0.3 mm away
++])
++def test_not_beside_grid_still_goes_via_clem(kw):
++    g = WP["GRID1"]
++    api = make(x=g.x_m + kw.get("x_off", 0.0), y=g.y_m, z=g.z_m + kw.get("z_off", 0.0),
++               t=kw.get("t", g.tilt_deg), r=kw.get("r", g.rot_deg))
++    rep = positioner(api).go_to_grid("GRID1")
++    assert rep.reached and _visited_clem(api)
++
++
++def test_at_other_grid_goes_via_clem():
++    g2 = WP["GRID2"]
++    api = make(x=g2.x_m, y=g2.y_m, z=g2.z_m, t=g2.tilt_deg, r=g2.rot_deg)
++    rep = positioner(api).go_to_grid("GRID1")
++    assert rep.reached and _visited_clem(api)
++
++
++def test_direct_move_still_asks_for_confirmation():
++    g = WP["GRID1"]
++    api = make(x=g.x_m + 0.0001, y=g.y_m, z=g.z_m, t=g.tilt_deg, r=g.rot_deg)
++    asked = []
++    positioner(api).go_to_grid("GRID1", confirm=lambda d: (asked.append(d), True)[1])
++    assert len(asked) == 1 and "GRID1" in asked[0]
++
++
++def test_direct_move_still_refuses_with_gis_needle_inserted():
++    g = WP["GRID1"]
++    api = make(x=g.x_m, y=g.y_m, z=g.z_m + 0.0006, t=g.tilt_deg, r=g.rot_deg)
++    api.set_gis_needle(1, NEEDLE_INSERTED)
++    with pytest.raises(StageSafetyError):
++        positioner(api).go_to_grid("GRID1")
++    assert api.stage_moves == []

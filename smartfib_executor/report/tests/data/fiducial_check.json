@@ -1,0 +1,39 @@
+{
+ "pos6": {
+  "image": "position_6_20261001_170644.bmp",
+  "ely": "num_06_left.ely",
+  "crop_box": [
+   63,
+   290,
+   205,
+   479
+  ],
+  "image_w": 1024,
+  "image_h": 768,
+  "pixel_size_um": 0.055810546875,
+  "measured_offset_px": [
+   9,
+   3
+  ],
+  "measured_contrast": 97.3
+ },
+ "pos7": {
+  "image": "position_7.bmp",
+  "ely": "num_07_left.ely",
+  "crop_box": [
+   79,
+   290,
+   205,
+   463
+  ],
+  "image_w": 1024,
+  "image_h": 768,
+  "pixel_size_um": 0.055810546875,
+  "measured_offset_px": [
+   6,
+   5
+  ],
+  "measured_contrast": 107.8
+ },
+ "_note": "Measured 2026-10-03 from session_20261001_170335 (v0.39.0 captures). measured_offset_px = shift that best puts the drawn .ely on the milled digit (+x right, +y down, 55.81 nm/px)."
+}

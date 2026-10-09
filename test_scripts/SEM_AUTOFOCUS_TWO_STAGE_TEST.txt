@@ -1,0 +1,50 @@
+TWO-STAGE SEM AUTOFOCUS TEST (pyFIB v0.49.0)                    about 10 min
+
+The SEM autofocus is now two passes: coarse at 500x (200 um WD steps), then fine at the
+working mag (30 um steps + 2 halfway), both at scan speed 4 in a 0.35 box. Designed from
+your 2026-10-05 focus curves; expected ~30 s. It never touches contrast/brightness or
+the stage, stays inside WD 4-8 mm, puts mag / scan speed / box back, puts the WD back if
+anything fails, and leaves the scan PAUSED (v0.49.0).
+
+DONE 2026-10-06 (v0.48.0, Tools tab): from 1.78 mm out at 66x -> OK at 6.1544 mm, 23
+frames, 55 s (coarse extended 3x). v0.49.0: pause at the end, no mag detour between the
+stages, fine contrast floor 0.2.
+
+Run from a command prompt in the pyFIB folder. Send the console output (and the
+sem_autofocus_<time> folder it names) for any step that does not do what is expected.
+
+SETUP (same as before)
+  - SEM beam on, sample near coincidence, FIB not milling.
+  - Contrast/brightness set by hand; auto BC OFF; Noise Reduction Pixel or Line Avg.
+  - Normal full-frame scan, store 1024 * 768, features in the CENTRE (also at 500x).
+  - Focus by hand at 2000x and note the WD: F.
+
+1) DRY RUN (nothing changes)                                             1 min
+     python -m smartfib_executor.sem_autofocus --sem-mag 2000
+   Expect the coarse/fine plan, "estimated ~NN s", "Nothing was changed".
+
+2) FROM FOCUS                                                            1 min
+     python -m smartfib_executor.sem_autofocus --arm --sem-mag 2000
+   Expect "SEM AUTOFOCUS OK" within ~3 um of F, about 17 frames, "took NN s" (note it),
+   SmartSEM back at your mag and scan speed, "scan paused (frozen)" and the image frozen.
+
+3) START 300 um OUT                                                      1 min
+   In SmartSEM set WD = F + 0.300 mm, then:
+     python -m smartfib_executor.sem_autofocus --arm --sem-mag 2000 --yes
+   Expect OK within ~5 um of F.
+
+4) START 1 mm OUT (needs the coarse range extended)                      2 min
+   Set WD = F - 1.000 mm (stay above 4.0 mm), then the same command.
+   Expect "coarse peak at the high edge: extending ..." and OK within ~5 um of F.
+
+5) TOOLS TAB                                                              1 min
+   UI -> Tools -> SEM autofocus with ARM on -> Yes. Expect the same result in the Log.
+
+6) SETTLE TIME (speed-up check)                                          3 min
+   Same start as step 3 (WD = F + 0.300 mm) each time, note result and "took":
+     python -m smartfib_executor.sem_autofocus --arm --sem-mag 2000 --yes
+     python -m smartfib_executor.sem_autofocus --arm --sem-mag 2000 --yes --settle-s 0.15
+     python -m smartfib_executor.sem_autofocus --arm --sem-mag 2000 --yes --settle-s 0.15 --jump-settle-s 0.5
+   If the shorter settles land within ~5 um of the default result, the defaults can drop
+   (about 8-10 s saved per run). Send the three outputs.
+

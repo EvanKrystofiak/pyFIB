@@ -54,6 +54,56 @@ def test_idle_still_reads_zero():
     assert sem.get_digital("DP_STAGE_IS") == 0         # genuinely Idle
 
 
+# ---- stage position: the v0.28.1 "x off by the whole target" bug ---- #
+_REAL = {"AP_STAGE_AT_X": 0.04849654, "AP_STAGE_AT_Y": 0.04902275, "AP_STAGE_AT_Z": 0.03898821,
+         "AP_STAGE_AT_T": 0.0, "AP_STAGE_AT_R": 316.434235, "AP_STAGE_AT_M": 0.005052}
+
+
+class _StageApi(_FakeApi):
+    """AP_STAGE_AT_* reads return the real position; GetStagePosition returns the
+    values in the tuple but leaves the passed VARIANTs at their initial 0.0."""
+    def Get(self, mnemonic, prime=None):
+        if mnemonic in _REAL:
+            return (0, _REAL[mnemonic])
+        return super().Get(mnemonic, prime)
+    def GetStagePosition(self, *variants):
+        return (0,) + tuple(_REAL.values())     # returned; VARIANTs NOT mutated
+
+
+def test_get_stage_position_reads_real_coordinates_not_stale_zeros():
+    sem = _sem_with_fake(); sem.api = _StageApi()
+    p = sem.get_stage_position()
+    assert abs(p.x_m - 0.04849654) < 1e-12        # was 0.0 -> "x off by 0.0485"
+    assert abs(p.rot_deg - 316.434235) < 1e-9
+    assert abs(p.master_z_m - 0.005052) < 1e-12
+
+
+def test_arrival_wait_confirms_at_real_position():
+    """The exact failing recall: stage idle at the target; arrival must confirm."""
+    sem = _sem_with_fake(); sem.api = _StageApi()
+    sem._get_stage_is_code = lambda: 0
+    import time as _t
+    _sleep = _t.sleep; _t.sleep = lambda s: None
+    try:
+        sem.wait_stage_arrival(x_m=0.04849654, y_m=0.04902275, z_m=0.03898821,
+                               r_deg=316.434235, m_m=0.005052, timeout_s=2.0)
+    finally:
+        _t.sleep = _sleep
+
+
+def test_getstageposition_fallback_captures_returned_tuple():
+    class _NoAP(_StageApi):
+        def Get(self, mnemonic, prime=None):
+            if mnemonic in _REAL:
+                raise RuntimeError("AP_STAGE_AT_* unavailable")
+            return super().Get(mnemonic, prime)
+    sem = _sem_with_fake(); sem.api = _NoAP()
+    # _call_ok needs to run the real path; give it a minimal error hook
+    sem._get_last_error = lambda: None
+    p = sem.get_stage_position()
+    assert abs(p.x_m - 0.04849654) < 1e-12       # from the RETURN, not stale v.value
+
+
 def _run_all() -> int:
     tests = [v for k, v in sorted(globals().items())
              if k.startswith("test_") and callable(v)]

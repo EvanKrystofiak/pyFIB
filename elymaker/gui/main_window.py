@@ -293,7 +293,7 @@ class MainWindow(QMainWindow):
         self._act_color_current = QAction("Colour by probe current", self, checkable=True)
         grp = QActionGroup(self); grp.setExclusive(True)
         grp.addAction(self._act_color_depth); grp.addAction(self._act_color_current)
-        self._act_color_depth.setChecked(True)
+        self._act_color_current.setChecked(True)
         self._act_color_depth.triggered.connect(lambda: self._set_color_mode("depth"))
         self._act_color_current.triggered.connect(lambda: self._set_color_mode("current"))
         viewm.addAction(self._act_color_depth)

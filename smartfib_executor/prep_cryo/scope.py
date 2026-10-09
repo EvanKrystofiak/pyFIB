@@ -8,7 +8,10 @@ Safety model (same as the coincidence tool):
 
 MNEMONICS -- now CONFIRMED on this instrument (operator-verified):
   * SEM EHT off        : CMD_EHT_OFF
-  * SEM EHT actual     : AP_ACTUALKV        (poll to ~0 to confirm off)
+  * SEM EHT actual     : AP_ACTUALKV        (must be <= 50 V ...)
+  * SEM Beam State     : DP_RUNUPSTATE      (... AND read "EHT Off", both held 3 s,
+                         before any valve; from the API manual 6.2.3 -- the log prints
+                         every state seen, to confirm the names on the instrument)
   * column valve close : CMD_CLOSE_COL_CHAMBER_VALVE ; state DP_COLUMN_CHAMBER_VALVE
                          (0 closed, 1 open, transit/unknown otherwise)
   * FIB gun valve      : DP_FIB_GUN_VALVE (0 closed, 1 open, transit otherwise);

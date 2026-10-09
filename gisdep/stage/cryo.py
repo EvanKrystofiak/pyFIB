@@ -1,7 +1,9 @@
 """Cryo stage positioning -- the FIRST step, before autofocus / WD / GIS deposition.
 
-Drives the cryostage to a grid position for GIS deposition, always via the CLEM SAFE
-waypoint, with the axis ordering Evan specified as safest for big stage moves:
+Drives the cryostage to a grid position for GIS deposition via the CLEM SAFE
+waypoint -- unless the stage is already at (or right beside) that grid, in which case
+the detour is skipped (pyFIB patch v0.36.0; see NEAR_*) -- with the axis ordering Evan
+specified as safest for big stage moves:
 
   1. To CLEM SAFE: move Z FIRST, then X, Y, T, R.   (M is NEVER moved.)
   2. Verify CLEM SAFE by reading back the stage position.
@@ -31,6 +33,17 @@ from gisdep.stage.mover import StageMover, StageMoveConfig, StageError
 _log = logging.getLogger("gisdep.stage.cryo")
 
 _XYTR = ("x", "y", "t", "r")
+
+# "Already at the grid" -> skip the CLEM SAFE detour (pyFIB patch, v0.36.0). The stage
+# counts as at the grid when X/Y are within NEAR_XY_M (the rule pyFIB's setup_move
+# uses), T/R within NEAR_DEG (no tilt/rotation swing), and Z within NEAR_Z_M -- one
+# WD-step cap (StageMoveConfig.max_delta_m), so a previous run's WD adjustment still
+# counts as "there". It then moves straight to the waypoint (X,Y,T,R first, then Z):
+# the only sizeable move is Z returning to the recorded, validated grid Z. Anything
+# further away goes via CLEM SAFE exactly as before.
+NEAR_XY_M = 0.3e-3
+NEAR_Z_M = 1.0e-3
+NEAR_DEG = 0.1
 _FIELD = {"x": "x_m", "y": "y_m", "z": "z_m", "t": "tilt_deg", "r": "rot_deg"}
 
 
@@ -131,6 +144,26 @@ class CryoPositioner:
                     f"(M not moved)"
                 )
 
+        # Already at (or right beside) this grid? Then skip the CLEM SAFE detour.
+        here = self.mover.read()
+        near = self._near(here, grid)
+        if near:
+            if self._at(here, grid):
+                self.log.info("cryo: already at %s (within verify tolerance); no move",
+                              grid_name)
+                steps.append(f"already at {grid_name}: no move, CLEM SAFE skipped")
+            else:
+                self.log.info("cryo: already beside %s (%s); CLEM SAFE skipped, moving "
+                              "direct (X,Y,T,R first, then Z)", grid_name, near)
+                steps.append(f"near {grid_name} ({near}): CLEM SAFE skipped")
+                self._gate(confirm, grid_name, grid)
+                self._move_axes(_XYTR, grid, steps, f"{grid_name} X,Y,T,R")
+                self._move_axes(("z",), grid, steps, f"{grid_name} Z")
+            self._verify_at(grid, grid_name)
+            steps.append(f"{grid_name} reached and verified")
+            return CryoMoveReport(grid_name, steps, self.mover.read(), True, placeholders,
+                                  m_current_m=m_now, m_ref_m=m_ref, m_matches=m_matches)
+
         # Phase A -- to CLEM SAFE: ONE confirmation for the whole move (Z first, then
         # X,Y,T,R). M never moves.
         self._gate(confirm, "CLEM SAFE", clem)
@@ -152,6 +185,26 @@ class CryoPositioner:
                               m_current_m=m_now, m_ref_m=m_ref, m_matches=m_matches)
 
     # --- helpers -----------------------------------------------------------
+    @staticmethod
+    def _near(pos: StagePosition, wp: CryoWaypoint) -> str:
+        """Non-empty description if pos is beside waypoint wp (see NEAR_*), else ''."""
+        dx, dy = abs(pos.x_m - wp.x_m), abs(pos.y_m - wp.y_m)
+        dz = abs(pos.z_m - wp.z_m)
+        dt, dr = abs(pos.tilt_deg - wp.tilt_deg), abs(pos.rot_deg - wp.rot_deg)
+        dr = min(dr, 360.0 - dr)
+        if dx <= NEAR_XY_M and dy <= NEAR_XY_M and dz <= NEAR_Z_M \
+                and dt <= NEAR_DEG and dr <= NEAR_DEG:
+            return (f"dX {dx*1e3:.3f} dY {dy*1e3:.3f} dZ {dz*1e3:.3f} mm, "
+                    f"dT {dt:.3f} dR {dr:.3f} deg")
+        return ""
+
+    def _at(self, pos: StagePosition, wp: CryoWaypoint) -> bool:
+        tm, td = self.cfg.verify_tol_m, self.cfg.verify_tol_deg
+        dr = abs(pos.rot_deg - wp.rot_deg); dr = min(dr, 360.0 - dr)
+        return (abs(pos.x_m - wp.x_m) <= tm and abs(pos.y_m - wp.y_m) <= tm
+                and abs(pos.z_m - wp.z_m) <= tm
+                and abs(pos.tilt_deg - wp.tilt_deg) <= td and dr <= td)
+
     def _gate(self, confirm, name: str, wp: CryoWaypoint) -> None:
         if confirm is None:
             return

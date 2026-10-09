@@ -1,5 +1,10 @@
 # gisdep — GIS deposition control tool (v0.16.1)
 
+> **pyFIB local patches (not yet upstream):**
+> * v0.36.1 — `stage/cryo.py`: `go_to_grid` skips the CLEM SAFE detour when the stage
+>   is already at / beside the requested grid (X/Y within 0.3 mm, Z within 1 mm, T/R
+>   within 0.1 deg); otherwise unchanged. Patch: `gisdep_skip_clem_when_at_grid.patch`.
+
 Standalone tool for cryo GIS (gas-injection-system) deposition on the ZEISS Crossbeam,
 developed separately from pyFIB (mirroring the elymaker pattern) for eventual
 integration. Python 3.9.13, Windows for instrument use; fully testable offline via a

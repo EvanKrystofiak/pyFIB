@@ -481,6 +481,228 @@ def test_adapter_scan_rate_set_then_cmd_recovers_from_readonly():
     assert sem.scan_rate == 4  # restored
 
 
+# ------------------- mag ensured + verified before the correlation grab ------------------- #
+class _PostMillFIB:
+    """Mag lowered by milling; a set only sticks once in FIB imaging mode."""
+    def __init__(self):
+        self.mag = 500.0; self.imaging = False; self.mag_at_grab = []
+    def set_value(self, m, v):
+        if m == "AP_FIB_MAGNIFICATION" and self.imaging: self.mag = float(v)
+    def get_float(self, m):
+        return {"AP_FIB_MAGNIFICATION": self.mag,
+                "DP_FIB_IMAGING": 1.0 if self.imaging else 0.0,
+                "DP_FROZEN": 1.0, "DP_SCANRATE": 8.0, "AP_FIB_SCAN_ROTATION": 0.0}.get(m, 0.0)
+    def get_str(self, m):
+        if m == "DP_FIB_IMAGING": return "FIB" if self.imaging else "SEM"
+        if m == "DP_FROZEN": return "Frozen"
+        return ""
+    def execute(self, c):
+        if c == "CMD_FIB_MODE_FIB": self.imaging = True
+    def grab_bmp(self, path, **k):
+        self.mag_at_grab.append(self.mag)
+        from PIL import Image; Image.new("L", (64, 48), 100).save(path)
+
+
+def test_refine_ensures_imaging_mode_then_verifies_mag_before_grab():
+    from ..sources import ScopeRefineAdapter
+    sem = _PostMillFIB()
+    src = ScopeRefineAdapter(sem, settle_s=0.0, frame_wait_s=0.0, imaging_scan_rate=None,
+                             dry_run=False, logger=lambda m: None)
+    src.grab_fib_image(2000.0)
+    assert sem.mag_at_grab[-1] == 2000.0      # not the post-mill 500
+
+
+# ---------------- Stage 2b: guarded, capped, one-move stage correction ---------------- #
+_PX = None
+def _px():
+    from ..geometry import pixel_size_m
+    return pixel_size_m(2000.0, 1024)
+
+
+class _ShortStage(SimulatedRefineScope):
+    """Mechanical under-travel: the stage achieves only `frac` of each move."""
+    def __init__(self, frac=0.85, **k):
+        super().__init__(**k); self.frac = frac
+    def move_stage_xy(self, x, y):
+        cx, cy = self.get_stage_xy()
+        super().move_stage_xy(cx + self.frac * (x - cx), cy + self.frac * (y - cy))
+
+
+class _FlippedStage(SimulatedRefineScope):
+    """Wrong-handed IMAGE response: the stage goes where commanded, but the image
+    moves the opposite way, so a correction makes the drift WORSE (must be undone)."""
+    def move_stage_xy(self, x, y):
+        b0, b1 = self.true_offset
+        super().move_stage_xy(x, y)
+        d0, d1 = self.true_offset[0] - b0, self.true_offset[1] - b1
+        self.true_offset[0], self.true_offset[1] = b0 - d0, b1 - d1
+
+
+def _run_stage(scope, **kw):
+    return refine_position(scope, scope.reference_image(), 2000.0, enable_stage=True,
+                           logger=lambda m: None, **kw)
+
+
+def test_stage_then_beam_handoff_finishes_the_residual():
+    s = _ShortStage(frac=0.85, magnification=2000.0, noise_sigma=4.0,
+                    true_offset_px=(0.0, 15e-6 / _px()))
+    r = _run_stage(s)
+    assert r.method == "stage+beam_shift" and r.success
+    assert r.applied_stage_delta_m != (0.0, 0.0)
+    assert s.get_beam_shift() != (0.0, 0.0)          # beam shift took the residual
+    assert abs(r.initial_drift_mag_m - 15e-6) < 0.5e-6
+
+
+def test_stage_move_that_makes_things_worse_is_undone():
+    s = _FlippedStage(magnification=2000.0, noise_sigma=4.0,
+                      true_offset_px=(0.0, 12e-6 / _px()))
+    st0 = s.get_stage_xy()
+    r = _run_stage(s)
+    assert not r.success and "undone" in r.message
+    assert s.get_stage_xy() == st0                    # restored
+    assert r.applied_stage_delta_m == (0.0, 0.0)
+
+
+def test_stage_refused_outside_tilt_model_range():
+    s = SimulatedRefineScope(magnification=2000.0, noise_sigma=4.0, stage_tilt_deg=45.0,
+                             true_offset_px=(0.0, 15e-6 / _px()))
+    st0 = s.get_stage_xy(); r = _run_stage(s)
+    assert r.stage_refused and not r.success and s.get_stage_xy() == st0
+
+
+def test_stage_refused_at_a_different_rotation():
+    s = SimulatedRefineScope(magnification=2000.0, noise_sigma=4.0, stage_rot_deg=316.4,
+                             true_offset_px=(0.0, 15e-6 / _px()))
+    st0 = s.get_stage_xy(); r = _run_stage(s)
+    assert r.stage_refused and "rotation" in r.message and s.get_stage_xy() == st0
+
+
+def test_stage_refused_above_the_cap_no_partial_move():
+    s = SimulatedRefineScope(magnification=2000.0, noise_sigma=4.0,
+                             true_offset_px=(0.0, 15e-6 / _px()))
+    st0 = s.get_stage_xy()
+    r = _run_stage(s, stage_max_m=5e-6)               # cap below the needed ~16.5 um
+    assert r.stage_refused and "exceeds" in r.message and s.get_stage_xy() == st0
+
+
+def test_stage_refused_if_tilt_unreadable():
+    class _NoPose(SimulatedRefineScope):
+        def get_stage_tilt_rot(self): raise RuntimeError("read failed")
+    s = _NoPose(magnification=2000.0, noise_sigma=4.0, true_offset_px=(0.0, 15e-6 / _px()))
+    st0 = s.get_stage_xy(); r = _run_stage(s)
+    assert r.stage_refused and s.get_stage_xy() == st0
+
+
+def test_stage_correction_uses_live_tilt_y_at_2_and_30_deg():
+    for tilt in (2.0, 12.0, 30.0):
+        s = SimulatedRefineScope(magnification=2000.0, noise_sigma=4.0, stage_tilt_deg=tilt,
+                                 true_offset_px=(12e-6 / _px(), 0.0))
+        r = _run_stage(s)
+        assert r.success, (tilt, r.message)
+
+
+def test_plan_only_moves_nothing_in_any_branch():
+    cases = [
+        dict(off=(0.0, 4e-6 / _px())),                          # beam-shift range
+        dict(off=(0.0, 15e-6 / _px())),                         # stage range
+        dict(off=(0.0, 15e-6 / _px()), stage_tilt_deg=45.0),    # refused: tilt
+        dict(off=(0.0, 15e-6 / _px()), stage_rot_deg=316.4),    # refused: rotation
+    ]
+    for c in cases:
+        off = c.pop("off")
+        s = SimulatedRefineScope(magnification=2000.0, noise_sigma=4.0,
+                                 true_offset_px=off, **c)
+        st0, b0 = s.get_stage_xy(), s.get_beam_shift()
+        r = _run_stage(s, plan_only=True)
+        assert r.method == "plan" and "Nothing moved" in r.message
+        assert s.get_stage_xy() == st0 and s.get_beam_shift() == b0
+        assert s.grabs >= 1                                       # it DID measure
+
+
+def test_plan_only_reports_the_stage_move_it_would_make():
+    s = SimulatedRefineScope(magnification=2000.0, noise_sigma=4.0,
+                             true_offset_px=(0.0, 15e-6 / _px()))
+    r = _run_stage(s, plan_only=True)
+    assert "PLAN: stage X/Y" in r.message and "tilt 2.00" in r.message
+
+
+# ---------------- two-stage (coarse 800x -> fine 2000x) ---------------- #
+from ..refine import refine_two_stage
+
+def _sim_um(off_um_x, **k):
+    return SimulatedRefineScope(magnification=2000.0, noise_sigma=4.0,
+                                true_offset_px=(0.0, off_um_x * 1e-6 / _px()), **k)
+
+
+def test_sim_renders_800x_consistently_with_2000x():
+    from ..registration import phase_cross_correlation
+    from ..geometry import drift_px_to_m
+    s = _sim_um(30.0)
+    reg = phase_cross_correlation(s.reference_image(800.0), s.grab_fib_image(800.0),
+                                  crop_bar=True)
+    dx, _ = drift_px_to_m(reg.dy_px, reg.dx_px, 800.0, reg.shape[1])
+    assert abs(dx - 30e-6) < 1e-6 and reg.snr > 4
+    # the 2000x rendering is unchanged (deterministic and identical between instances)
+    a = SimulatedRefineScope(magnification=2000.0, noise_sigma=0.0, add_databar=False)
+    b = SimulatedRefineScope(magnification=2000.0, noise_sigma=0.0, add_databar=False)
+    assert np.array_equal(a.reference_image(), b.reference_image())
+
+
+def test_fine_only_refuses_aliased_out_of_reach_drift():
+    """A 30 um offset at 2000x wraps to a confident WRONG -27 um; the guard refuses."""
+    s = _sim_um(30.0)
+    r = refine_position(s, s.reference_image(), 2000.0, enable_stage=True)
+    assert r.low_confidence and "aliased" in r.message
+    assert s.get_stage_xy() == (0.0, 0.0) and s.get_beam_shift() == (0.0, 0.0)
+
+
+def test_two_stage_recovers_30um_with_stage_then_fine():
+    s = _sim_um(30.0)
+    t = refine_two_stage(s, s.reference_image(800.0), 800.0, s.reference_image(), 2000.0,
+                         enable_stage=True)
+    assert t.success and t.stage_moved and t.fine is not None
+    assert t.fine.residual_drift_m < 0.3e-6
+    assert all(r == 5 for m, r in s.grab_log if m == 800.0)       # coarse at rate 5
+    assert all(r is None for m, r in s.grab_log if m == 2000.0)   # fine untouched
+    assert s.mag_set_log[-1] == 2000.0                            # left at fine mag
+
+
+def test_two_stage_small_drift_uses_beam_only():
+    s = _sim_um(5.0)
+    t = refine_two_stage(s, s.reference_image(800.0), 800.0, s.reference_image(), 2000.0,
+                         enable_stage=True)
+    assert t.success and not t.stage_moved
+
+
+def test_two_stage_stops_when_stage_needed_but_disabled():
+    s = _sim_um(30.0)
+    t = refine_two_stage(s, s.reference_image(800.0), 800.0, s.reference_image(), 2000.0,
+                         enable_stage=False)
+    assert not t.success and t.fine is None
+    assert s.get_stage_xy() == (0.0, 0.0) and s.mag_set_log[-1] == 2000.0
+
+
+def test_two_stage_plan_only_moves_nothing():
+    s = _sim_um(30.0)
+    t = refine_two_stage(s, s.reference_image(800.0), 800.0, s.reference_image(), 2000.0,
+                         enable_stage=True, plan_only=True)
+    assert "Nothing moved" in t.message and t.fine is None
+    assert s.get_stage_xy() == (0.0, 0.0) and s.get_beam_shift() == (0.0, 0.0)
+
+
+def test_two_stage_restores_fine_mag_even_if_coarse_raises():
+    class _Boom(SimulatedRefineScope):
+        def grab_fib_image(self, mag, scan_rate=None):
+            if mag == 800.0: raise RuntimeError("grab failed")
+            return super().grab_fib_image(mag, scan_rate=scan_rate)
+    s = _Boom(magnification=2000.0, noise_sigma=4.0)
+    try:
+        refine_two_stage(s, s.reference_image(800.0), 800.0, s.reference_image(), 2000.0)
+    except RuntimeError:
+        pass
+    assert s.mag_set_log[-1] == 2000.0
+
+
 def _run_all() -> int:
     tests = [v for k, v in sorted(globals().items())
              if k.startswith("test_") and callable(v)]

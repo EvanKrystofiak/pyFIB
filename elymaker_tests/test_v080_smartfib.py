@@ -10,24 +10,24 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 # --------------------------------------------------------------------------- #
 # colour ramp: blue -> red at 1.5 nA, then magenta above
 # --------------------------------------------------------------------------- #
-def test_current_ramp_red_at_700pa(qapp):
+# Probe colours are now CATEGORICAL (one fixed Okabe-Ito colour per library probe),
+# not a hue ramp: the tests assert distinctness/determinism, not specific hues.
+def test_probe_colour_700pa_is_fixed_and_distinct(qapp):
     from elymaker.gui.items import current_color
-    c = current_color(7e-10)      # 700 pA is now the red cap
-    assert c.red() > 200 and c.green() < 80 and c.blue() < 80   # ~red
+    c = current_color(7e-10)
+    assert c.rgb() == current_color(7e-10).rgb()                 # deterministic
+    assert c.rgb() != current_color(3e-10).rgb() != current_color(1.5e-9).rgb()
 
 
-def test_current_ramp_blue_floor_at_20pa(qapp):
+def test_probe_colours_10pa_and_20pa_are_different_probes(qapp):
     from elymaker.gui.items import current_color
-    # 10 pA and 20 pA are both the blue floor
-    assert current_color(1e-11).rgb() == current_color(2e-11).rgb()
-    b = current_color(2e-11)
-    assert b.blue() > b.red() and b.blue() > b.green()          # blue-dominant
+    # they are distinct library probes -> distinct colours (was a shared "blue floor")
+    assert current_color(1e-11).rgb() != current_color(2e-11).rgb()
 
 
-def test_current_ramp_magenta_above_700pa(qapp):
+def test_probe_colour_30na_distinct_from_700pa(qapp):
     from elymaker.gui.items import current_color
-    hi = current_color(3e-8)      # 30 nA
-    assert hi.red() > 180 and hi.blue() > 150 and hi.green() < 100   # magenta-ish
+    assert current_color(3e-8).rgb() != current_color(7e-10).rgb()
 
 
 def test_current_ramp_spreads_mid_currents(qapp):

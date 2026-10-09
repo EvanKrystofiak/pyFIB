@@ -65,19 +65,61 @@ def depth_color(depth_um: float, alpha: int = 110) -> QColor:
     return c
 
 
-# --- colour mode: shapes can be tinted by depth (default) or by probe current #
+# --- colour mode: shapes can be tinted by probe current (default) or by depth #
 COLOR_BY_DEPTH, COLOR_BY_CURRENT = "depth", "current"
-_COLOR_MODE = COLOR_BY_DEPTH
-# probe current colour ramp: spread blue(low)..red across 10 pA .. 1.5 nA, then
-# push anything above 1.5 nA into magenta/purple so the common probes (which
-# cluster at the low end on a log scale) get real dynamic range instead of all
-# reading yellow.
-# probe current colour ramp: blue(<=20 pA) -> red(700 pA) -> magenta(>=30 nA).
-# Red caps at 700 pA and blue floors at 20 pA so the mid-range probes spread
-# across the spectrum instead of bunching in yellow/green.
-_CUR_MIN, _CUR_RAMP_MAX = 2e-11, 7e-10     # blue(20 pA) -> red(700 pA)
-_CUR_HIGH = 3e-8                            # 700 pA .. 30 nA -> red -> magenta
+_COLOR_MODE = COLOR_BY_CURRENT
+# --- probe colours: CATEGORICAL, one fixed distinct colour per library probe --- #
+# Probes are discrete named things, so a continuous hue ramp was the wrong model:
+# adjacent stages landed on adjacent hues (100 pA green vs 50 pA cyan-green, 1.5 nA
+# and 700 pA both red) -- and adjacent stages are exactly the ones drawn nested
+# together. Instead each library probe (ordered by current) takes a fixed colour
+# from the Okabe-Ito colourblind-safe palette, ordered so that NEIGHBOURING probes
+# alternate warm/cool and are far apart in hue. Deterministic: 700 pA is always the
+# same colour, session to session. Unknown currents map to the nearest library probe.
+_OKABE_ITO = [
+    (213, 94, 0),     # vermillion
+    (0, 114, 178),    # blue
+    (230, 159, 0),    # orange
+    (0, 158, 115),    # bluish green
+    (204, 121, 167),  # reddish purple
+    (86, 180, 233),   # sky blue
+    (240, 228, 66),   # yellow
+    # extras beyond the strict Okabe-Ito 7 so all 11 library probes are unique;
+    # the common lamella range (20 pA .. 1.5 nA) stays within the first 7.
+    (0, 140, 140),    # teal
+    (150, 75, 0),     # brown
+    (200, 0, 200),    # magenta
+    (128, 128, 0),    # olive
+]
 _NO_CURRENT = QColor(150, 156, 168)   # no probe / recipe default
+_CURRENT_FILL_ALPHA = 170             # was 110: semi-transparent fills blended where
+                                      # fine boxes lie on top of coarse ones
+
+
+def _library_currents():
+    """Distinct library probe currents, ascending (cached)."""
+    global _LIB_CURRENTS
+    try:
+        return _LIB_CURRENTS
+    except NameError:
+        pass
+    try:
+        from ..probes import PROBES, probe_names_by_current
+        seen, out = set(), []
+        for n in probe_names_by_current():
+            c = float(PROBES[n].current_A)
+            if c not in seen:
+                seen.add(c); out.append(c)
+        _LIB_CURRENTS = out
+    except Exception:
+        _LIB_CURRENTS = []
+    return _LIB_CURRENTS
+
+
+def probe_palette():
+    """[(current_A, QColor)] for the library probes, ascending by current."""
+    cur = _library_currents()
+    return [(c, QColor(*_OKABE_ITO[i % len(_OKABE_ITO)])) for i, c in enumerate(cur)]
 
 
 def set_color_mode(mode: str) -> None:
@@ -92,17 +134,18 @@ def color_mode() -> str:
 
 
 def current_color(current_A, alpha: int = 110) -> QColor:
-    """Log ramp: blue(low)->red at 1.5 nA, then red->magenta up to 30 nA."""
+    """Categorical colour for a probe current (nearest library probe)."""
     if not current_A or current_A <= 0:
         c = QColor(_NO_CURRENT)
-    elif current_A <= _CUR_RAMP_MAX:
-        lo, hi = math.log10(_CUR_MIN), math.log10(_CUR_RAMP_MAX)
-        t = max(0.0, min(1.0, (math.log10(current_A) - lo) / (hi - lo)))
-        c = QColor.fromHsv(int(210 - t * 210), 200, 235)   # blue(210) -> red(0)
     else:
-        lo, hi = math.log10(_CUR_RAMP_MAX), math.log10(_CUR_HIGH)
-        t = max(0.0, min(1.0, (math.log10(current_A) - lo) / (hi - lo)))
-        c = QColor.fromHsv(int(360 - t * 60), 200, 235)    # red(360) -> magenta(300)
+        cur = _library_currents()
+        if not cur:
+            c = QColor(_NO_CURRENT)
+        else:
+            # nearest on a log scale (probe currents are geometric)
+            lc = math.log10(float(current_A))
+            i = min(range(len(cur)), key=lambda k: abs(math.log10(cur[k]) - lc))
+            c = QColor(*_OKABE_ITO[i % len(_OKABE_ITO)])
     c.setAlpha(alpha)
     return c
 
@@ -124,7 +167,8 @@ def _pen(item) -> QPen:
     c = _base_color(item, 255)
     pen = QPen(c)
     pen.setCosmetic(True)  # constant on-screen width regardless of zoom
-    pen.setWidthF(1.5)
+    # opaque, slightly heavier edge in probe mode so nested boxes read distinctly
+    pen.setWidthF(2.0 if _COLOR_MODE == COLOR_BY_CURRENT else 1.5)
     if getattr(item, "ignored", False):
         pen.setStyle(Qt.DashLine)
     return pen
@@ -132,7 +176,10 @@ def _pen(item) -> QPen:
 
 def _brush(item) -> QBrush:
     ignored = getattr(item, "ignored", False)
-    return QBrush(_base_color(item, alpha=40 if ignored else 110))
+    if ignored:
+        return QBrush(_base_color(item, alpha=40))
+    alpha = _CURRENT_FILL_ALPHA if _COLOR_MODE == COLOR_BY_CURRENT else 110
+    return QBrush(_base_color(item, alpha=alpha))
 
 
 class ShapeItemMixin:

@@ -8,6 +8,7 @@ from typing import Iterable, List, Literal, Optional
 from .positions import PositionDatabase, PositionRecord, recall_position
 from .runner import MILLING_IMAGING_CODES, PatternJob, PatternRunner
 from .smartsem_com import SmartSEM, SmartSEMError
+from .tilt_guard import BATCH_TILT_LIMIT_DEG, TiltLimitError, plan_batch_tilts, read_live_tilt
 from .milling_workflow import (
     AutofocusConfig, RefineConfig,
     run_autofocus_at_position, run_refine_at_position,
@@ -49,10 +50,16 @@ def _safe_get_float(sem: SmartSEM, mnemonic: str) -> Optional[float]:
 MILL_SCAN_ROT_TOL_DEG = 0.5
 
 
-def _resolve_position_ely(rec, default_ely: Path, ref_base_dir=None):
+def _resolve_position_ely(rec, default_ely: Path, ref_base_dir=None,
+                          force_pattern: bool = False):
     """Pick the .ely to mill for a position: the AUTHORED pattern (rec.ely_pattern) if
     it exists, otherwise the standard default. Returns (path, source, message) where
-    source is 'authored' | 'standard' | 'authored_missing'."""
+    source is 'authored' | 'standard' | 'authored_missing' | 'forced'.
+
+    force_pattern=True mills the GIVEN pattern regardless of any authored one -- used
+    for fiducials, which must never be replaced by the position's lamella pattern."""
+    if force_pattern:
+        return Path(default_ely), "forced", "using the given pattern (forced; authored override bypassed)"
     authored = getattr(rec, "ely_pattern", None)
     if authored:
         ap = Path(authored)
@@ -89,8 +96,10 @@ def _report_ely_pattern(idx: int, total: int, rec, ref_base_dir=None) -> None:
         print(f"[{idx}/{total}] pattern {ely}: matches its ready-marker.")
 
 
-def _report_mill_conditions(idx: int, total: int, rec, sem: SmartSEM) -> None:
+def _report_mill_conditions(idx: int, total: int, rec, sem: SmartSEM) -> dict:
     """List the current FIB scan rotation + beam shift vs the recorded capture values.
+
+    Returns the values it read (for the run log; v0.40.0). No new reads.
 
     Informational only -- milling proceeds regardless (warn, never refuse). Scan
     rotation should match capture; a CHANGED beam shift is EXPECTED when refine ran
@@ -133,6 +142,9 @@ def _report_mill_conditions(idx: int, total: int, rec, sem: SmartSEM) -> None:
             and abs(cur_rot) > MILL_SCAN_ROT_TOL_DEG:
         print(f"    *** WARNING: scan rotation is {cur_rot:.3f} deg (no recorded "
               f"capture value to compare). ***")
+    return {"scan_rotation_deg": cur_rot,
+            "beam_shift_um": [None if cur_bx is None else round(cur_bx * 1e6, 4),
+                              None if cur_by is None else round(cur_by * 1e6, 4)]}
 
 
 def _safe_get_str(sem: SmartSEM, mnemonic: str) -> Optional[str]:
@@ -254,7 +266,10 @@ def mill_positions_sequential(
     db: PositionDatabase,
     position_names: Iterable[str],
     ely_local_path: Path,
-    move_method: Literal["ap_goto", "movestage", "none"] = "ap_goto",
+    force_pattern: bool = False,
+    record_fiducial: Optional[str] = None,   # "left" | "right": set fiducial_side on success
+    db_path: Optional[Path] = None,          # where to save the db after recording
+    move_method: Literal["ap_goto", "movestage", "none"] = "movestage",
     wait_stage_idle: bool = True,
     stage_timeout_s: float = 120.0,
     skip_objective: bool = False,
@@ -280,6 +295,24 @@ def mill_positions_sequential(
     ref_base_dir: Optional[Path] = None,
     dry_run_focus_refine: bool = False,
     reset_beam_shift_between_positions: bool = True,
+    run_log=None,                            # report.runlog.RunLog (v0.40.0); never affects milling
+    after_image: bool = False,               # v0.41.0: one FIB frame per site after milling
+    after_image_dir: Optional[Path] = None,  # default <ref_base_dir>/images
+    # v0.46.0 batch tilt limit (tilt_guard): positions whose recorded tilt is more than
+    # tilt_limit_deg from the live tilt (or from the previous site's) are never recalled.
+    # They must be listed in tilt_skip_ok (the user OKed skipping them), else the batch
+    # refuses before ANY motion. tilt_limit_deg=None disables the check (tests only).
+    tilt_limit_deg: Optional[float] = BATCH_TILT_LIMIT_DEG,
+    tilt_skip_ok: Optional[Iterable[str]] = None,
+    # v0.51.0 milling stages (mill_stages.py). stage=None: as before. "rough": as before,
+    # but the after image is named <name>_1-rough_<time>.bmp and recorded in
+    # positions.json. "prepolish" / "polish": the GIVEN .ely at every position (authored
+    # rough patterns are never milled), refine aligns to the previous stage's latest after
+    # image, and a position without that image is never recalled -- it must be listed in
+    # reference_skip_ok (the user OKed skipping it), else the batch refuses before ANY
+    # motion.
+    stage: Optional[str] = None,
+    reference_skip_ok: Optional[Iterable[str]] = None,
     # Injection hooks (tests replace these to check ordering without hardware).
     _autofocus_fn=run_autofocus_at_position,
     _refine_fn=run_refine_at_position,
@@ -291,7 +324,19 @@ def mill_positions_sequential(
     - The milling layout is defined by the .ely file (loaded via SmartFIB drop or already loaded).
 
     Parameters match the CLI for 'mill-positions'.
+
+    run_log (v0.40.0): optional RunLog that records each site for the report. Every
+    call into it goes through _log(), which swallows any error, so the log can never
+    change what the microscope does.
     """
+
+    def _log(method: str, *a, **k) -> None:
+        if run_log is None:
+            return
+        try:
+            getattr(run_log, method)(*a, **k)
+        except Exception as e:  # noqa: BLE001
+            print(f"[run log] WARNING: {method} failed ({e}); milling continues.")
 
     runner = PatternRunner(sem)
 
@@ -305,6 +350,86 @@ def mill_positions_sequential(
     if total == 0:
         print("No positions to mill.")
         return
+
+    # Milling stage (v0.51.0): references decided BEFORE any motion (and before the tilt
+    # plan, so the tilt chain is over the positions that will really be milled).
+    from .mill_stages import (FORCED_PATTERN_STAGES, PREVIOUS_STAGE, STAGE_LABEL,
+                              StageReferenceError, check_stage, plan_stage,
+                              record_after_image, resolve_stage_pattern)
+    stage = check_stage(stage)
+    stage_refs = {}
+    if stage in FORCED_PATTERN_STAGES:
+        if load_method != "smartfib_drop":
+            raise ValueError(
+                f"{STAGE_LABEL[stage]} needs load_method 'smartfib_drop' (with "
+                f"{load_method!r} SmartFIB would mill whatever is already loaded); nothing moved")
+        # A Prepolish / Polish site whose refine failed is never milled: off by the rough
+        # refine correction (several um) the pattern could cut the lamella.
+        import dataclasses as _dcs
+        rf_cfg = _dcs.replace(rf_cfg, abort_on_failure=True)
+    if stage is not None:
+        print(f"[stage] {STAGE_LABEL[stage]}"
+              + (f": every position mills {Path(ely_local_path).name}; refine aligns to the "
+                 f"latest {STAGE_LABEL[PREVIOUS_STAGE[stage]]} after image"
+                 if stage in FORCED_PATTERN_STAGES else ""))
+    if stage is not None and PREVIOUS_STAGE[stage] is not None:
+        splan = plan_stage(db, names, stage, ref_base_dir)
+        ok_ref = {str(n) for n in (reference_skip_ok or [])}
+        not_ok = [n for n in splan.missing if n not in ok_ref]
+        if not_ok:
+            for line in splan.lines():
+                print(line)
+            raise StageReferenceError(
+                f"{', '.join(not_ok)}: no {STAGE_LABEL[PREVIOUS_STAGE[stage]]} after image to "
+                f"align {STAGE_LABEL[stage]} to, and skipping was not OKed; nothing moved")
+        if splan.missing:
+            for n, why in splan.missing.items():
+                print(f"[stage] NOT milling {n}: {why}")
+            names = [n for n in names if n not in splan.missing]
+        _log("stage_check", stage, dict(splan.missing))
+        stage_refs = dict(splan.references)
+        total = len(names)
+        if total == 0:
+            print(f"[stage] No position has a {STAGE_LABEL[PREVIOUS_STAGE[stage]]} after "
+                  f"image; nothing to mill.")
+            return
+    elif stage is not None:
+        _log("stage_check", stage, {})
+
+    # Batch tilt limit (v0.46.0): decided BEFORE any motion, including the beam-shift zero.
+    tilt_plan = None
+    if move_method != "none" and tilt_limit_deg is not None:
+        live_t = read_live_tilt(sem)                       # raises -> nothing has moved
+        tilt_plan = plan_batch_tilts(names, {n: db.get(n).stage_at.t_deg for n in names},
+                                     live_t, float(tilt_limit_deg))
+        ok = {str(n) for n in (tilt_skip_ok or [])}
+        excluded = tilt_plan.excluded
+        not_ok = [n for n in excluded if n not in ok]
+        if not_ok:
+            for line in tilt_plan.table_lines():
+                print(line)
+            raise TiltLimitError(
+                f"recorded tilt of {', '.join(not_ok)} is outside the {tilt_limit_deg:g} deg "
+                f"batch limit and skipping it was not OKed; nothing moved")
+        skip = {n: excluded.get(n, "OKed to skip") for n in names if n in excluded or n in ok}
+        if skip:
+            names = [n for n in names if n not in skip]
+            again = plan_batch_tilts(names, {n: db.get(n).stage_at.t_deg for n in names},
+                                     live_t, float(tilt_limit_deg))
+            if again.excluded:                              # removing sites changed the chain
+                for line in again.table_lines():
+                    print(line)
+                raise TiltLimitError(
+                    f"without the skipped positions, {', '.join(again.excluded)} would change "
+                    f"tilt by more than {tilt_limit_deg:g} deg; nothing moved")
+            tilt_plan = again
+            for n, why in skip.items():
+                print(f"[tilt] NOT milling {n}: {why}")
+        _log("tilt_check", live_t, float(tilt_limit_deg), skip)
+        total = len(names)
+        if total == 0:
+            print("[tilt] No position is within the tilt limit; nothing to mill.")
+            return
 
     # Start from a known-zero FIB beam shift so the FIRST site's refine is not
     # baselined on a leftover shift (which may already be high before we begin).
@@ -322,6 +447,7 @@ def mill_positions_sequential(
         )
         print(f"Objective potential: {rec.fib_objective_potential_v:.6f} V")
         print("=" * 72)
+        _log("site_start", rec.name, idx, total, rec)
 
         try:
             # Safety interlock: never move the stage if SmartSEM indicates milling is still active.
@@ -342,6 +468,17 @@ def mill_positions_sequential(
                 )
 
             # 1) Move stage first (if requested)
+            if tilt_plan is not None and rec.stage_at.t_deg is not None:
+                # Re-check against the LIVE tilt right before this recall (v0.46.0).
+                t_now = read_live_tilt(sem)
+                t_rec = float(rec.stage_at.t_deg)
+                lim = float(tilt_limit_deg)
+                if (abs(t_rec - t_now) > lim + 1e-6
+                        or abs(t_rec - tilt_plan.live_deg) > lim + 1e-6):
+                    raise TiltLimitError(
+                        f"tilt guard: {rec.name} is recorded at {t_rec:.2f} deg, the stage is "
+                        f"at {t_now:.2f} deg (batch started at {tilt_plan.live_deg:.2f}); "
+                        f"limit {lim:g} deg -- not moving")
             if move_method != "none":
                 recall_position(
                     sem,
@@ -352,6 +489,7 @@ def mill_positions_sequential(
                     wait_stage_idle=bool(wait_stage_idle),
                     stage_timeout_s=float(stage_timeout_s),
                 )
+                _log("site_set", recall={"method": str(move_method), "done": True})
 
             # 2) Apply objective potential at the site
             if not skip_objective:
@@ -365,8 +503,9 @@ def mill_positions_sequential(
             #     column at best focus. Runs BEFORE refine so refine images in focus.
             if name in af_set:
                 print(f"[{idx}/{total}] Autofocus at {rec.name}")
-                _autofocus_fn(sem, rec, af_cfg, dry_run=bool(dry_run_focus_refine),
-                              logger=print)
+                af_res = _autofocus_fn(sem, rec, af_cfg, dry_run=bool(dry_run_focus_refine),
+                                       logger=print)
+                _log("site_autofocus", af_res)
                 print(f"[{idx}/{total}] Autofocus done at {rec.name}")
 
             # 2b) Refine (optional, per position). Cross-correlates the live image
@@ -374,16 +513,26 @@ def mill_positions_sequential(
             #     shift; the correction stays applied so milling lands on target.
             if name in rf_set:
                 print(f"[{idx}/{total}] Refine at {rec.name}")
-                _refine_fn(sem, rec, rf_cfg, ref_base_dir=ref_base_dir,
-                           dry_run=bool(dry_run_focus_refine), logger=print)
+                _ref_kw = ({"reference_path": stage_refs[name]} if name in stage_refs
+                           else {})
+                rf_res = _refine_fn(sem, rec, rf_cfg, ref_base_dir=ref_base_dir,
+                                    dry_run=bool(dry_run_focus_refine), logger=print,
+                                    **_ref_kw)
+                _log("site_refine", rf_res)
                 print(f"[{idx}/{total}] Refine done at {rec.name}")
 
             # 3) Run milling. DEFAULT: the standard pattern (ely_local_path). OVERRIDE:
             #    if this position has an authored pattern (rec.ely_pattern) and the file
             #    exists, mill THAT instead.
-            per_pos_ely, _src, _msg = _resolve_position_ely(
-                rec, Path(ely_local_path), ref_base_dir)
+            if stage in FORCED_PATTERN_STAGES:
+                # Prepolish / Polish: the stage pattern, never the authored rough one.
+                per_pos_ely, _src, _msg = resolve_stage_pattern(
+                    rec, stage, Path(ely_local_path), ref_base_dir)
+            else:
+                per_pos_ely, _src, _msg = _resolve_position_ely(
+                    rec, Path(ely_local_path), ref_base_dir, force_pattern=force_pattern)
             print(f"[{idx}/{total}] {rec.name}: {_msg}")
+            _log("site_pattern", per_pos_ely, _src, _msg)
 
             job = PatternJob(
                 ely_local_path=per_pos_ely,
@@ -403,18 +552,67 @@ def mill_positions_sequential(
 
             # Phase D: report FIB scan rotation + beam shift vs the recorded capture
             # conditions (warn only -- milling proceeds regardless).
-            _report_mill_conditions(idx, total, rec, sem)
-            _report_ely_pattern(idx, total, rec, ref_base_dir)
+            _cond = _report_mill_conditions(idx, total, rec, sem)
+            _log("site_set", mill_conditions=_cond)
+            if _src == "authored":
+                _report_ely_pattern(idx, total, rec, ref_base_dir)
 
             runner.run(job)
             print(f"[{idx}/{total}] Completed milling at {rec.name}")
 
+            # 3b) After-mill image (optional, v0.41.0). Taken BEFORE the beam-shift reset
+            #     so the frame shares the view the pattern was milled in. Skipped (with
+            #     a warning) unless milling is confirmed inactive; never fails the site.
+            if after_image and not dry_run_focus_refine:
+                try:
+                    from .after_image import grab_after_mill_image
+                    img_dir = (Path(after_image_dir) if after_image_dir else
+                               (Path(ref_base_dir) / "images" if ref_base_dir else Path("images")))
+                    a_path, a_warn = grab_after_mill_image(
+                        sem, rec, img_dir, milling_active=lambda: _is_milling_active(sem),
+                        log=print, stage=stage)
+                except Exception as e:  # noqa: BLE001
+                    a_path, a_warn = None, f"after-mill image for {rec.name} FAILED ({e})"
+                if a_path is not None:
+                    print(f"[{idx}/{total}] after-mill image: {a_path}")
+                    if stage is not None and db_path is not None:
+                        # v0.51.0: the latest after image of this stage -> positions.json
+                        # (the next stage refines to it). Never fails the site.
+                        try:
+                            rel = record_after_image(db_path, rec.name, stage, a_path, db=db)
+                            print(f"[{idx}/{total}] recorded {STAGE_LABEL[stage]} after image "
+                                  f"for {rec.name}: {rel}")
+                        except Exception as e:  # noqa: BLE001
+                            a_warn = ((a_warn + " ") if a_warn else "") + (
+                                f"could not record it in positions.json ({e})")
+                if a_warn:
+                    print(f"[{idx}/{total}] *** WARNING: {a_warn} ***")
+                _log("site_after_image", a_path, a_warn)
+
+            if record_fiducial:
+                # Remember that a fiducial now exists on this side of the image at this
+                # position (drift correction will look for it).
+                import dataclasses as _dc
+                try:
+                    db.positions[rec.name] = _dc.replace(db.positions.get(rec.name, rec),
+                                                         fiducial_side=str(record_fiducial))
+                    if db_path is not None:
+                        db.save(Path(db_path))
+                    print(f"[{idx}/{total}] recorded fiducial_side = {record_fiducial} "
+                          f"for {rec.name}")
+                    _log("site_set", fiducial_recorded=str(record_fiducial))
+                except Exception as e:  # noqa: BLE001
+                    print(f"[{idx}/{total}] WARNING: could not record fiducial_side: {e}")
+            _log("site_end", "milled")
+
         except KeyboardInterrupt:
             # PatternRunner already attempts abort milling on Ctrl+C; just re-raise
+            _log("site_end", "stopped", "interrupted (Ctrl+C)")
             raise
 
         except Exception as e:
             print(f"Error at {rec.name}: {e}")
+            _log("site_end", "error", f"{type(e).__name__}: {e}")
             if not continue_on_error:
                 raise
             print("Continuing to next position due to --continue-on-error...")

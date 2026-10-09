@@ -13,4 +13,4 @@ Implementation note:
 __all__ = ["__version__"]
 
 # Keep version in one place.
-__version__ = "0.26.1"
+__version__ = "0.51.2"

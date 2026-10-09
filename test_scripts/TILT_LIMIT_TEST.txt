@@ -1,0 +1,40 @@
+BATCH TILT LIMIT CHECK (pyFIB v0.46.0)                          about 10 min
+==============================================================================
+
+What changed: a MILL BATCH only mills positions whose recorded tilt is within 2 deg of
+the stage's current tilt (and within 2 deg of the previous site). Anything else is
+listed BEFORE any motion and is not milled; the batch starts only after you OK that
+list. Setup, GISDEP, goto-position and all other stage moves are unchanged.
+
+Steps 1-3 never move the stage. Stop and send the Log text if anything moves.
+
+
+1) DRY RUN (ARM OFF, no microscope contact)                              1 min
+   Mill tab, any session, a few positions ticked -> Start.
+   Expect each position listed with "T=... deg" and the line
+   "Tilt limit: a position is milled only if its recorded tilt is within 2 deg ...".
+
+
+2) TILT CHECK, READ-ONLY                                                  2 min
+   Command prompt in the pyFIB folder:
+     python -m smartfib_executor.cli mill-positions <pattern.ely> --positions-file <session>\positions.json --tilt-check
+   Expect: "[tilt] current stage tilt X.XX deg" (compare with SmartSEM's tilt), one line
+   per position marked mill or SKIP, and a "TILT-CHECK: ..." line. Nothing moves.
+
+
+3) DECOY AT ANOTHER TILT, ANSWER NO                                       5 min
+   a) Copy a session folder (e.g. session_..._tiltdecoy). In the COPY's positions.json,
+      pick one position and change its "t_deg" to the current tilt + 5 (e.g. 7.0).
+   b) UI: Load Previous... -> the copy. ARM ON. Mill tab: tick the decoy and one other
+      position. Start.
+   c) Expect: the Log shows the tilt table (decoy SKIP), then a dialog:
+      "The stage is at X.XX deg. These positions are more than 2 deg ... will NOT be
+      milled: <decoy> ... Mill the other 1 position(s)?"  -> answer NO.
+   d) Expect "Not started; nothing moved." The stage must not move.
+
+
+4) OPTIONAL, ONE SACRIFICIAL SITE: ANSWER YES                            ~mill time
+   Repeat 3 with a real sacrificial position as the "other" one and answer YES.
+   Expect: "[tilt] NOT milling <decoy>: ..." in the Log, the decoy row "Skipped (tilt)",
+   only the sacrificial site recalled and milled. Tools -> Make report: the decoy shows
+   "Not milled" with the skip reason.

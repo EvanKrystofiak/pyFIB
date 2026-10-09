@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no" ?>
+<ELAYOUT version="2.0" locked="false" name="fiducial_06_left">
+
+  <VERSION created="01.10.2026 17:04:21" modified="01.10.2026 17:04:21" number="1.0"/>
+
+  <AXES show="true"/>
+
+  <GRID horizontal="1" show="true" snap_to="false" vertical="1"/>
+
+  <LAYER_LIST>
+    <LAYER fill_color="#00FF00" fill_opacity="0.5" hidden="false" locked="false" name="Layer">
+        </LAYER>
+  </LAYER_LIST>
+
+  <STRUCTURE_LIST>
+    <STRUCTURE locked="false" name="Structure">
+      <VERSION created="01.10.2026 17:04:21" modified="01.10.2026 17:04:21" number="1.0"/>
+      <INSTANCE_LIST/>
+      <LAYER_REFERENCE frame_cx="0" frame_cy="0" frame_size="76.2993" ref="Layer">
+        <POLYGON dose_factor="5" z_extent="5e-006 m" edge_sel_auto_scan_angle="true" points="(-21.8853 2.72755) (-21.6353 2.97755) (-20.5081 2.97755) (-20.2581 2.72755) (-20.5081 2.47755) (-21.6353 2.47755) " contours="0 ">
+          <EXPOSURE version="2.1" file="D:\FIB Recipes\Vitriuos_Ice.epm">
+          <PROBE name="30kV:300pA" type="specific" current="3e-010 A" diameter="1.75e-007 m"/>
+          </EXPOSURE>
+            </POLYGON>
+        <POLYGON dose_factor="5" z_extent="5e-006 m" edge_sel_auto_scan_angle="true" points="(-22.5217 0.61395) (-22.2717 0.86395) (-22.2717 1.84115) (-22.5217 2.09115) (-22.7717 1.84115) (-22.7717 0.86395) " contours="0 ">
+          <EXPOSURE version="2.1" file="D:\FIB Recipes\Vitriuos_Ice.epm">
+          <PROBE name="30kV:300pA" type="specific" current="3e-010 A" diameter="1.75e-007 m"/>
+          </EXPOSURE>
+            </POLYGON>
+        <POLYGON dose_factor="5" z_extent="5e-006 m" edge_sel_auto_scan_angle="true" points="(-21.8853 -0.02245) (-21.6353 0.22755) (-20.5081 0.22755) (-20.2581 -0.02245) (-20.5081 -0.27245) (-21.6353 -0.27245) " contours="0 ">
+          <EXPOSURE version="2.1" file="D:\FIB Recipes\Vitriuos_Ice.epm">
+          <PROBE name="30kV:300pA" type="specific" current="3e-010 A" diameter="1.75e-007 m"/>
+          </EXPOSURE>
+            </POLYGON>
+        <POLYGON dose_factor="5" z_extent="5e-006 m" edge_sel_auto_scan_angle="true" points="(-22.5217 -2.13605) (-22.2717 -1.88605) (-22.2717 -0.90885) (-22.5217 -0.65885) (-22.7717 -0.90885) (-22.7717 -1.88605) " contours="0 ">
+          <EXPOSURE version="2.1" file="D:\FIB Recipes\Vitriuos_Ice.epm">
+          <PROBE name="30kV:300pA" type="specific" current="3e-010 A" diameter="1.75e-007 m"/>
+          </EXPOSURE>
+            </POLYGON>
+        <POLYGON dose_factor="5" z_extent="5e-006 m" edge_sel_auto_scan_angle="true" points="(-19.6217 -2.13605) (-19.3717 -1.88605) (-19.3717 -0.90885) (-19.6217 -0.65885) (-19.8717 -0.90885) (-19.8717 -1.88605) " contours="0 ">
+          <EXPOSURE version="2.1" file="D:\FIB Recipes\Vitriuos_Ice.epm">
+          <PROBE name="30kV:300pA" type="specific" current="3e-010 A" diameter="1.75e-007 m"/>
+          </EXPOSURE>
+            </POLYGON>
+        <POLYGON dose_factor="5" z_extent="5e-006 m" edge_sel_auto_scan_angle="true" points="(-21.8853 -2.77245) (-21.6353 -2.52245) (-20.5081 -2.52245) (-20.2581 -2.77245) (-20.5081 -3.02245) (-21.6353 -3.02245) " contours="0 ">
+          <EXPOSURE version="2.1" file="D:\FIB Recipes\Vitriuos_Ice.epm">
+          <PROBE name="30kV:300pA" type="specific" current="3e-010 A" diameter="1.75e-007 m"/>
+          </EXPOSURE>
+            </POLYGON>
+      </LAYER_REFERENCE>
+    </STRUCTURE>
+  </STRUCTURE_LIST>
+
+</ELAYOUT>

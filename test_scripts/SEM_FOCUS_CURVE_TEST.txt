@@ -1,0 +1,42 @@
+SEM FOCUS-CURVE MEASUREMENT (pyFIB v0.47.0)                     about 10 min
+
+Measures how sharpness changes with SEM focus (WD) at low mag and at 2000x, at several
+scan speeds, to design the fast two-stage SEM autofocus (coarse at low mag / fast scan,
+then fine at 2000x). It ONLY measures: no "best" focus is applied, the WD ends where it
+started, and mag, scan speed and the scan box are put back after every pass. It never
+touches contrast/brightness or the stage, and stays inside WD 4-8 mm.
+
+Run from a command prompt in the pyFIB folder (the one containing smartfib_executor\).
+
+SETUP (same as SEM_AUTOFOCUS_TEST.txt)
+  - SEM beam on, sample near coincidence (WD ~5 mm), FIB not milling.
+  - Focus the SEM by hand AT 2000x as well as you can (the fine passes sweep only
+    +/-150 um around where you start); set contrast/brightness by hand.
+  - Auto brightness/contrast OFF. Noise Reduction: Pixel Avg or Line Avg.
+  - Normal full-frame scan. Store resolution 1024 * 768.
+  - A feature-rich area in the CENTRE of the image, that still has features at 250x
+    (grid bars, ice, earlier trenches all help). Note the WD shown in SmartSEM.
+
+1) DRY RUN (nothing changes)                                              1 min
+     python -m smartfib_executor.sem_autofocus.curve
+   Expect the 7 passes listed with frame counts and a time estimate (about 8-10 min),
+   ending "Nothing was changed. Add --arm to measure." If it says REFUSED, fix what it
+   lists and repeat.
+
+2) MEASURE                                                              ~10 min
+     python -m smartfib_executor.sem_autofocus.curve --arm
+   Answer yes. The passes, in order:
+     coarse_250x_s4, coarse_250x_s5, coarse_500x_s4, coarse_500x_s5
+         WD start +/-1 mm in 100 um steps (21 points, clipped to 4-8 mm)
+     fine_2000x_s4, fine_2000x_s5, fine_2000x_s6
+         WD start +/-150 um in 15 um steps (21 points)
+   Each pass: one settle frame, the sweep, one frame back at the start WD.
+   Do not touch the SEM while it runs; a change of contrast/brightness/mag/stage
+   stops the run (WD goes back).
+   Expect at the end a table (peak, contrast, half band per pass) and
+   "WD at the end: <same as the start>".
+
+3) SEND IT BACK
+   Zip the folder it names (sem_af_curve_<time>) and attach it. It holds every frame
+   (BMP), curve.csv, curves.png, one contact sheet per pass and summary.json.
+   Also check in SmartSEM that WD, mag and scan speed are what you started with.

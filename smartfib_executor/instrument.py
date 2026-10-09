@@ -54,6 +54,10 @@ class PyfibMockSEM(MockSmartSEM):
                  **kwargs):
         super().__init__(**kwargs)
         self.eht_v = float(eht_v)
+        # DP_RUNUPSTATE ("Beam State", API manual 6.2.3): 1 "Beam On" ... 8 "EHT going
+        # off", 10 "EHT Off". The mock switches straight to EHT Off on CMD_EHT_OFF;
+        # prep_cryo's tests subclass it to model the real ramp-down lag.
+        self.runup_state = "EHT Off" if self.eht_v <= 50.0 else "Beam On"
         self.frozen = bool(frozen)
         self.scan_rate = int(scan_rate)
         self.fib_valve = int(fib_valve)         # 0 closed, 1 open, 3 transit
@@ -81,7 +85,14 @@ class PyfibMockSEM(MockSmartSEM):
                     "t": sp.tilt_deg, "r": sp.rot_deg, "m": sp.m_m}[axis]
         return super().get_analogue(param)
 
+    RUNUP_STATES = ("Shutdown", "Beam On", "Running Up", "Shutting Down",
+                    "Running Down", "Beam Going Off", "Restoring Beam", "Standby",
+                    "EHT going off", "Beam Off", "EHT Off", "Run up", "Waiting Vac",
+                    "Service Runup", "Emergency Rundown", "Conditioning")
+
     def get_digital(self, param: str) -> int:
+        if param == "DP_RUNUPSTATE":
+            return self.RUNUP_STATES.index(self.runup_state)
         if param == "DP_FROZEN":
             return 1 if self.frozen else 0
         if param == "DP_SCANRATE":
@@ -95,6 +106,8 @@ class PyfibMockSEM(MockSmartSEM):
         return super().get_digital(param)
 
     def get_digital_text(self, param: str) -> str:
+        if param == "DP_RUNUPSTATE":
+            return self.runup_state
         if param == "DP_FROZEN":
             return "Frozen" if self.frozen else "Live"
         return super().get_digital_text(param)
@@ -119,7 +132,8 @@ class PyfibMockSEM(MockSmartSEM):
     # --- actions ---
     def execute(self, command: str) -> None:
         if command == "CMD_EHT_OFF":
-            self.eht_v = 0.0; self.executed.append(command); return
+            self.eht_v = 0.0; self.runup_state = "EHT Off"
+            self.executed.append(command); return
         if command == "CMD_CLOSE_COL_CHAMBER_VALVE":
             self.column_valve = 0; self.executed.append(command); return
         if command == "CMD_FIB_GUN_VALVE_CLOSE":
@@ -149,6 +163,24 @@ class PyfibMockSEM(MockSmartSEM):
         if "AP_WD" in self._ap:                        # dWD/dZ coupling, applied now
             self._ap["AP_WD"] += dz * getattr(self, "_wd_per_z", -1.0)
         self.stage_moves.append((x, y, z, t, r, m))
+
+    # --- stage waits (moves snap instantly here, so these just verify) ---
+    def wait_stage_idle(self, timeout_s: float = 120.0, poll_s: float = 0.25) -> None:
+        return
+
+    def wait_stage_arrival(self, x_m=None, y_m=None, z_m=None, t_deg=None,
+                           r_deg=None, m_m=None, *, tol_m: float = 0.3e-3,
+                           tol_deg: float = 0.05, timeout_s: float = 120.0,
+                           poll_s: float = 0.25) -> None:
+        """Mirror SmartSEM.wait_stage_arrival: verify the (instant) move landed."""
+        p = self.get_stage_position()
+        checks = (("x", x_m, p.x_m, tol_m), ("y", y_m, p.y_m, tol_m),
+                  ("z", z_m, p.z_m, tol_m), ("t", t_deg, p.tilt_deg, tol_deg),
+                  ("r", r_deg, p.rot_deg, tol_deg), ("m", m_m, p.m_m, tol_m))
+        for name, target, cur, tol in checks:
+            if target is not None and abs(float(cur) - float(target)) > tol:
+                raise SmartSEMError(
+                    0, f"stage arrival: {name} off by {abs(float(cur)-float(target)):.4g}")
 
     # --- image grab ---
     def grab_bmp(self, path, *, xoff=0, yoff=0, width=64, height=48, reduction=0):

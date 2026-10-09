@@ -1,0 +1,66 @@
+COARSE (800x) REFINE TEST (pyFIB v0.39.0)                about 20 min
+=====================================================================
+
+Goal: refine a site that is too far off for 2000x (30 um) using the 800x coarse
+pass: coarse stage move + beam shift at 800x, then the normal 2000x fine pass.
+CLI only (not in mill batches or the UI yet). Stop at the first FAIL.
+
+<pf>  = the session's positions.json (top bar of the UI), e.g.
+        positions\session_20261001_104004\positions.json
+<img> = that session's images folder, e.g. positions\session_20261001_104004\images
+
+Stage: tilt 12, R 12 (refine refuses other R). GIS retracted. A FRESH sacrificial
+area with texture, in focus at 2000x.
+
+
+C1. 800x scale check (moves the stage 40 um in X, then Y, and back; asks to confirm)
+        python -m smartfib_executor.refine --calibrate-stage --magnification 800 --stage-test-step-um 40 --save-calibration --stage-calibration-file stagecal_800x_T12.json
+    PASS: both axes ok, and "response_raw" close to the 2000x values at 12 deg
+    (X about 0.91, Y about 0.70). That confirms the 800x pixel scale.
+    Bring back stagecal_800x_T12.json.
+
+C2. Capture a site WITH its 800x coarse image (tilt not recorded)
+        python -m smartfib_executor.cli capture-position position_3 --positions-file <pf> --coarse-mag 800 --no-include-tilt --arm
+    Note the two image paths it prints (position_3.bmp and position_3_coarse.bmp).
+
+C3. Move 30 um off in X and Y (decoy copy + recall; recall now uses MoveStage)
+        python -m smartfib_executor.refine.offset_position <pf> position_3 --dx-um 30 --dy-um 30
+        python -m smartfib_executor.cli goto-position position_3_dx30_dy30 --positions-file <pf> --arm
+    (Use the decoy name the first command prints.)
+
+C4. Plan only (grabs frames, moves NOTHING)
+        python -m smartfib_executor.refine --reference <img>\position_3.bmp --coarse-reference <img>\position_3_coarse.bmp --magnification 2000 --coarse-magnification 800 --enable-stage --plan-only
+    PASS: COARSE plan with a drift of about (27, -21) um and a stage move of about
+    (-30, -30) um.
+
+C5. Live (asks to confirm)
+        python -m smartfib_executor.refine --reference <img>\position_3.bmp --coarse-reference <img>\position_3_coarse.bmp --magnification 2000 --coarse-magnification 800 --enable-stage
+    PASS: coarse "STAGE moved", coarse residual under 1 um, then the fine pass at 2000x
+    ends under 0.3 um. The FIB image should match position_3's reference.
+
+Bring back: the console output of C1, C4 and C5, and stagecal_800x_T12.json.
+
+C1-C5 PASSED on 2026-10-01 (v0.38.0): 800x scale X 0.939 / Y 0.719; 30+30 um decoy ->
+coarse stage (-30.85, -30.17) um -> 0.58 um -> fine 0.05 um.
+
+
+PART D - the 800x FALLBACK inside a mill batch (v0.39.0)       about 10 min
+---------------------------------------------------------------------------
+In mill batches refine runs at 2000x first. Only if 2000x cannot locate the site
+(and the site has an 800x image) does it put the beam shift back and retry with the
+800x image: coarse pass (stage only if "Refine may move stage"), then 2000x.
+
+D1. Capture tab: "Also capture 800x image" is ticked by default. Capture a fresh
+    sacrificial site as position_4 ("Record tilt" unticked).
+D2. Decoy 30 + 30 um (too far for 2000x):
+        python -m smartfib_executor.refine.offset_position <pf> position_4 --dx-um 30 --dy-um 30
+D3. Mill tab: tick ONLY position_4_dx30_dy30 with Mill + Refine. "Refine may move
+    stage" is ticked by default. Pattern smartfib_executor\assets\fiducial_left.ely.
+    ARM > Start. (CLI: mill-positions ... --refine position_4_dx30_dy30
+    --refine-enable-stage --arm)
+D4. PASS, in the Log:
+      - 2000x: "Unreliable ... exceeds 40% of the field" (or similar)
+      - "2000x could not locate the site ...; retrying with the 800x image."
+      - "COARSE pass at 800x", "STAGE moved", then the FINE pass at 2000x
+      - "800x fallback OK", "STAGE moved (...) um (X/Y) in the 800x pass", milling
+    Then a FIB image: the square where it would be on position_4.

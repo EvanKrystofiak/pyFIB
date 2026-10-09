@@ -1,0 +1,40 @@
+{
+  "magnification": 2000.0,
+  "image_width_px": 1024,
+  "nominal_pixel_size_m": 5.5810546875e-08,
+  "axes": {
+    "x": {
+      "axis": "x",
+      "commanded_step_m": 1.9999999999999998e-05,
+      "achieved_step_m": 1.9997358322143555e-05,
+      "dx_px": 323.29235224484114,
+      "dy_px": 3.913144505891842,
+      "response": 1.0,
+      "response_raw": 0.9022753250018096,
+      "measured_pixel_size_m": 6.185533985969091e-08,
+      "crosstalk_px": 3.913144505891842,
+      "snr": 118.49610714212936,
+      "ok": true,
+      "note": ""
+    },
+    "y": {
+      "axis": "y",
+      "commanded_step_m": 1.9999999999999998e-05,
+      "achieved_step_m": 1.9997358322143555e-05,
+      "dx_px": 4.992740988614445,
+      "dy_px": -309.90349003913263,
+      "response": -1.0,
+      "response_raw": -0.8649084033466041,
+      "measured_pixel_size_m": 6.452769641161e-08,
+      "crosstalk_px": 4.992740988614445,
+      "snr": 95.33993869501477,
+      "ok": true,
+      "note": ""
+    }
+  },
+  "correction_signs": [
+    -1.0,
+    1.0
+  ],
+  "rotation_hint_deg": 0.6934767088433201
+}

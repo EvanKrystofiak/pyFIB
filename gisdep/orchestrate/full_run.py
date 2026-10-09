@@ -126,7 +126,8 @@ def run_full_workflow(
     log.info("=== FULL RUN: %s, GIS%d, dwell %.1fs ===", grid_name, port, dwell_s)
 
     _check_abort()
-    log.info("STEP 1: cryo positioning -> %s (via CLEM SAFE)", grid_name)
+    log.info("STEP 1: cryo positioning -> %s (via CLEM SAFE unless already there)",
+             grid_name)
     cryo = CryoPositioner(api, waypoints=waypoints, clock=clock, log=log).go_to_grid(
         grid_name, confirm=confirm, abort=abort
     )

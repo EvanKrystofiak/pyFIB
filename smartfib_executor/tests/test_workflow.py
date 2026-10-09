@@ -212,6 +212,229 @@ def test_refine_without_reference_aborts_when_configured():
         pass
 
 
+# -------- refine stage correction: pipeline opt-in (v0.36.0) -------- #
+def _capture_refine_kwargs(cfg, stage_moved=False):
+    """Run run_refine_at_position with refine_position stubbed; return its kwargs."""
+    import tempfile
+    import numpy as np
+    from PIL import Image
+    import smartfib_executor.refine as R
+    from ..milling_workflow import run_refine_at_position
+    from ..refine.refine import RefineResult
+    d = Path(tempfile.mkdtemp())
+    Image.fromarray(np.full((48, 64), 100, dtype=np.uint8)).save(d / "p1.bmp")
+    rec = _rec("p1"); rec = rec.__class__(**{**rec.__dict__, "image_bmp": "p1.bmp"})
+    seen, logs = {}, []
+    old = R.refine_position
+    def fake(scope, ref, mag, **kw):
+        seen.update(kw)
+        return RefineResult(success=True, method="stage+beam_shift" if stage_moved else "beam_shift",
+                            initial_drift_x_m=12e-6, initial_drift_y_m=0.0,
+                            initial_drift_mag_m=12e-6, residual_drift_m=1e-7,
+                            applied_stage_delta_m=(-13.2e-6, 0.0) if stage_moved else (0.0, 0.0))
+    R.refine_position = fake
+    try:
+        run_refine_at_position(_dummy_sem(), rec, cfg, ref_base_dir=d, logger=logs.append)
+    finally:
+        R.refine_position = old
+    return seen, logs
+
+
+def test_refine_stage_is_off_by_default_in_the_pipeline():
+    seen, _ = _capture_refine_kwargs(RefineConfig())
+    assert seen["enable_stage"] is False
+
+
+def test_refine_stage_opt_in_reaches_refine_with_the_100um_cap():
+    seen, logs = _capture_refine_kwargs(RefineConfig(enable_stage=True), stage_moved=True)
+    assert seen["enable_stage"] is True and abs(seen["stage_max_m"] - 100e-6) < 1e-12
+    assert any("STAGE moved" in l for l in logs)                 # visible in the log
+
+
+def test_mill_positions_cli_flag_sets_enable_stage():
+    import smartfib_executor.cli as C
+    captured = {}
+    old = C.mill_positions_sequential
+    class _Sem:
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+        def connect_local(self, *a): pass
+        def connect_remoting(self): pass
+        def get_float(self, m): return 2.0   # AP_STAGE_AT_T for the v0.46.0 tilt check
+    import tempfile
+    d = Path(tempfile.mkdtemp()); pf = d / "positions.json"
+    db = PositionDatabase(); db.positions["p1"] = _rec("p1"); db.save(pf)
+    ely = d / "x.ely"; ely.write_text("<x/>")
+    old_sem = C.SmartSEM
+    try:
+        C.mill_positions_sequential = lambda sem, **kw: captured.update(kw)
+        C.SmartSEM = _Sem
+        for flag, want in ((["--refine-enable-stage"], True), ([], False)):
+            captured.clear()
+            C.main(["mill-positions", str(ely), "p1", "--positions-file", str(pf),
+                    "--refine", "p1", "--arm", *flag])
+            assert captured["refine_config"].enable_stage is want
+    finally:
+        C.mill_positions_sequential = old; C.SmartSEM = old_sem
+
+
+
+# ------------- 800x fallback when 2000x cannot locate the site (v0.39.0) ------------- #
+def _rr(success, *, low_conf=False, disabled=False, refused=False, stage=(0.0, 0.0),
+        msg=""):
+    from ..refine.refine import RefineResult
+    return RefineResult(success=success, method="none" if not success else "beam_shift",
+                        initial_drift_x_m=0.0, initial_drift_y_m=0.0,
+                        initial_drift_mag_m=0.0, residual_drift_m=5e-8 if success else 1e-5,
+                        applied_stage_delta_m=stage, low_confidence=low_conf,
+                        stage_required_but_disabled=disabled, stage_refused=refused,
+                        message=msg)
+
+
+class _BeamSem:
+    """Dummy SEM with a readable/settable beam shift (records every set)."""
+    def __init__(self):
+        self.beam = {"AP_FIB_BEAM_SHIFT_X": 2e-6, "AP_FIB_BEAM_SHIFT_Y": -1e-6}
+        self.sets = []
+    def get_float(self, m):
+        if m in self.beam:
+            return self.beam[m]
+        return 16400.0 if "OBJECTIVE" in m else 0.0
+    def get_str(self, m): return "FIB"
+    def set_value(self, m, v):
+        self.sets.append((m, float(v)))
+        if m in self.beam:
+            self.beam[m] = float(v)
+    def execute(self, *a, **k): pass
+
+
+def _fallback(cfg, first, two=None, *, coarse=True):
+    """run_refine_at_position with refine_position / refine_two_stage stubbed."""
+    import tempfile
+    import numpy as np
+    from PIL import Image
+    import smartfib_executor.refine as R
+    import smartfib_executor.refine.refine as RR
+    from ..milling_workflow import run_refine_at_position
+    d = Path(tempfile.mkdtemp())
+    Image.fromarray(np.full((48, 64), 100, dtype=np.uint8)).save(d / "p1.bmp")
+    Image.fromarray(np.full((48, 64), 90, dtype=np.uint8)).save(d / "p1_coarse.bmp")
+    rec = _rec("p1")
+    extra = {"image_bmp": "p1.bmp"}
+    if coarse:
+        extra.update(image_bmp_coarse="p1_coarse.bmp", coarse_magnification_x=800.0)
+    rec = rec.__class__(**{**rec.__dict__, **extra})
+    calls, logs, sem = [], [], _BeamSem()
+    o1, o2 = R.refine_position, RR.refine_two_stage
+    def fake_fine(scope, ref, mag, **kw):
+        sem.beam["AP_FIB_BEAM_SHIFT_X"] = 9e-6          # a failed pass left a shift behind
+        return first
+    def fake_two(scope, cref, cmag, fref, fmag, **kw):
+        calls.append({"cmag": cmag, "fmag": fmag, "cref_mean": float(cref.mean()),
+                      "beam_at_start": (sem.beam["AP_FIB_BEAM_SHIFT_X"],
+                                        sem.beam["AP_FIB_BEAM_SHIFT_Y"]), **kw})
+        return two
+    R.refine_position, RR.refine_two_stage = fake_fine, fake_two
+    try:
+        out = run_refine_at_position(sem, rec, cfg, ref_base_dir=d, logger=logs.append)
+    finally:
+        R.refine_position, RR.refine_two_stage = o1, o2
+    return out, calls, logs
+
+
+def _two(success, coarse_stage=(-30e-6, -30e-6)):
+    from ..refine.refine import TwoStageResult
+    coarse = _rr(True, stage=coarse_stage, msg="Stage-refined to 0.58 um.")
+    fine = _rr(success, msg="Refined to 0.05 um with beam shift." if success else "x")
+    return TwoStageResult(coarse, fine, success,
+                          "coarse: ok | fine: " + ("ok" if success else "failed"),
+                          coarse_stage != (0.0, 0.0))
+
+
+def test_800x_fallback_runs_when_2000x_cannot_locate_the_site():
+    out, calls, logs = _fallback(RefineConfig(enable_stage=True),
+                                 _rr(False, low_conf=True, msg="Unreliable: aliased"),
+                                 _two(True))
+    assert len(calls) == 1 and calls[0]["cmag"] == 800.0 and calls[0]["fmag"] == 2000.0
+    assert abs(calls[0]["cref_mean"] - 90.0) < 1e-9          # the 800x image was used
+    assert calls[0]["enable_stage"] is True and abs(calls[0]["stage_max_m"] - 100e-6) < 1e-12
+    assert calls[0]["beam_at_start"] == (2e-6, -1e-6)        # beam shift put back first
+    assert out.success
+    assert any("retrying with the 800x image" in l for l in logs)
+    assert any("STAGE moved" in l and "800x pass" in l for l in logs)
+
+
+def test_800x_fallback_never_chains_a_second_stage_move():
+    # The failed 2000x pass already KEPT a stage move -> the 800x pass gets beam shift only.
+    first = _rr(False, stage=(-12e-6, 0.0), msg="still beyond the beam-shift window")
+    _, calls, logs = _fallback(RefineConfig(enable_stage=True), first, _two(True))
+    assert calls and calls[0]["enable_stage"] is False
+    assert any("one stage move per site" in l for l in logs)
+
+
+def test_800x_fallback_respects_stage_opt_out():
+    _, calls, _ = _fallback(RefineConfig(enable_stage=False),
+                            _rr(False, low_conf=True), _two(True, coarse_stage=(0.0, 0.0)))
+    assert calls and calls[0]["enable_stage"] is False
+
+
+def test_no_800x_fallback_when_2000x_succeeds_or_located_the_site():
+    for first in (_rr(True),                                   # aligned at 2000x
+                  _rr(False, disabled=True),                   # located; stage not allowed
+                  _rr(False, refused=True)):                   # located; stage guard refused
+        _, calls, _ = _fallback(RefineConfig(), first, _two(True))
+        assert calls == [], first
+
+
+def test_no_800x_fallback_without_an_800x_image_or_when_disabled():
+    out, calls, logs = _fallback(RefineConfig(), _rr(False, low_conf=True), _two(True),
+                                 coarse=False)
+    assert calls == [] and not out.success
+    assert any("no 800x image" in l for l in logs)
+    _, calls, _ = _fallback(RefineConfig(coarse_fallback=False), _rr(False, low_conf=True),
+                            _two(True))
+    assert calls == []
+
+
+def test_800x_fallback_failure_follows_abort_policy():
+    out, calls, logs = _fallback(RefineConfig(), _rr(False, low_conf=True), _two(False))
+    assert calls and not out.success
+    assert any("800x fallback FAILED" in l for l in logs)
+    assert any("NOT refined" in l and "800x pass moved it" in l for l in logs)
+    try:
+        _fallback(RefineConfig(abort_on_failure=True), _rr(False, low_conf=True), _two(False))
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("abort_on_failure did not raise")
+
+
+def test_mill_positions_cli_coarse_fallback_flag():
+    import smartfib_executor.cli as C
+    captured = {}
+    old = C.mill_positions_sequential
+    class _Sem:
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+        def connect_local(self, *a): pass
+        def connect_remoting(self): pass
+        def get_float(self, m): return 2.0   # AP_STAGE_AT_T for the v0.46.0 tilt check
+    import tempfile
+    d = Path(tempfile.mkdtemp()); pf = d / "positions.json"
+    db = PositionDatabase(); db.positions["p1"] = _rec("p1"); db.save(pf)
+    ely = d / "x.ely"; ely.write_text("<x/>")
+    old_sem = C.SmartSEM
+    try:
+        C.mill_positions_sequential = lambda sem, **kw: captured.update(kw)
+        C.SmartSEM = _Sem
+        for flag, want in ((["--no-refine-coarse-fallback"], False), ([], True)):
+            captured.clear()
+            C.main(["mill-positions", str(ely), "p1", "--positions-file", str(pf),
+                    "--refine", "p1", "--arm", *flag])
+            assert captured["refine_config"].coarse_fallback is want
+    finally:
+        C.mill_positions_sequential = old; C.SmartSEM = old_sem
+
 # ------------------- beam-shift reset between positions ------------------- #
 def test_beam_shift_zeroed_at_start_and_after_each_position():
     """FIB beam shift X and Y must be 0 before the first site and after each one."""

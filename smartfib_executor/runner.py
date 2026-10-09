@@ -108,6 +108,10 @@ class PatternJob:
     ensure_fib_mode_mill: bool = False
     arm: bool = False  # require explicit arming for any machine-affecting action
 
+    # v0.51.0 "Push pattern": False = load + prepare the layout in SmartFIB and STOP --
+    # CMD_FIB_START_MILLING is never sent; the operator starts milling in SmartFIB.
+    start_milling: bool = True
+
     # Waiting strategy after CMD_FIB_START_MILLING
     #
     # - mode_change: SerialFIB-like, waits for DP_FIB_MODE to enter then leave Milling.
@@ -756,6 +760,10 @@ class PatternRunner:
             else:
                 raise ValueError(f"Unknown load_method: {job.load_method}")
 
+            if not job.start_milling:
+                print("  - STOP: pattern pushed only; CMD_FIB_START_MILLING is NOT sent "
+                      "(start milling in SmartFIB)")
+                return
             if job.pre_macro:
                 print(f"  - Execute pre-macro: {job.pre_macro}")
             if job.ensure_fib_mode_mill:
@@ -772,7 +780,11 @@ class PatternRunner:
             return
 
         # ARMED execution
-        print("[ARMED] Executing pattern at current stage location.")
+        if not job.start_milling and job.load_method == "none":
+            print("[PUSH] load method 'none': nothing to push; milling NOT started.")
+            return
+        print("[ARMED] Executing pattern at current stage location." if job.start_milling
+              else "[ARMED] Pushing pattern to SmartFIB (milling will NOT start).")
 
         # 1) Load pattern
         if job.load_method == "smartfib_drop":
@@ -801,6 +813,11 @@ class PatternRunner:
 
         else:
             raise ValueError(f"Unknown load_method: {job.load_method}")
+
+        if not job.start_milling:
+            print("[PUSH] Pattern loaded and prepared in SmartFIB; milling NOT started. "
+                  "Start it in SmartFIB.")
+            return
 
         # 2) Optional pre-macro
         if job.pre_macro:

@@ -179,10 +179,19 @@ class PatternView(QGraphicsView):
         from .items import (color_mode, COLOR_BY_CURRENT, current_color,
                             depth_color)
         if color_mode() == COLOR_BY_CURRENT:
-            title = "Probe current"
-            entries = [("30 nA", 3e-8), ("7 nA", 7e-9), ("1.5 nA", 1.5e-9),
-                       ("700 pA", 7e-10), ("300 pA", 3e-10), ("100 pA", 1e-10),
-                       ("20 pA", 2e-11), ("none", None)]
+            title = "Probe"
+            # one entry per library probe (the same mapping the shapes use), so the
+            # legend can never drift from the colours on the canvas
+            try:
+                from ..probes import PROBES, probe_names_by_current
+                entries = []
+                for n in probe_names_by_current():
+                    c = PROBES[n].current_A
+                    lbl = n.split(":", 1)[-1]            # "30kV:700pA" -> "700pA"
+                    entries.append((lbl, c))
+                entries.append(("none", None))
+            except Exception:
+                entries = [("none", None)]
             swatch = lambda v: current_color(v, 255)
         else:
             title = "Depth (um)"

@@ -1,0 +1,40 @@
+{
+  "magnification": 2000.0,
+  "image_width_px": 1024,
+  "nominal_pixel_size_m": 5.5810546875e-08,
+  "axes": {
+    "x": {
+      "axis": "x",
+      "commanded_step_m": 1.9999999999999998e-05,
+      "achieved_step_m": 2.0001083612442017e-05,
+      "dx_px": 330.5242528637933,
+      "dy_px": 4.531190166148249,
+      "response": 1.0,
+      "response_raw": 0.9222869953057933,
+      "measured_pixel_size_m": 6.051321026867073e-08,
+      "crosstalk_px": 4.531190166148249,
+      "snr": 69.42290062108115,
+      "ok": true,
+      "note": ""
+    },
+    "y": {
+      "axis": "y",
+      "commanded_step_m": 1.9999999999999998e-05,
+      "achieved_step_m": 2.0001083612442017e-05,
+      "dx_px": 4.886386217919161,
+      "dy_px": -209.15338272248232,
+      "response": -1.0,
+      "response_raw": -0.5836166128137451,
+      "measured_pixel_size_m": 9.562878377626191e-08,
+      "crosstalk_px": 4.886386217919161,
+      "snr": 124.59006025333309,
+      "ok": true,
+      "note": "measured pixel size 95.6 nm vs nominal 55.8 nm (>25% off): stage scale or pixel-size calibration is suspect"
+    }
+  },
+  "correction_signs": [
+    -1.0,
+    1.0
+  ],
+  "rotation_hint_deg": 0.7854243920622792
+}

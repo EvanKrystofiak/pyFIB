@@ -135,6 +135,24 @@ class ArmBar(QWidget):
         return self.pos_edit.text().strip()
 
 
+def next_position_name(current: str, existing) -> str:
+    """position_1 -> position_2 (keeps zero-padding: pos09 -> pos10); a name without a
+    trailing number gets _2. Skips names already in `existing`."""
+    import re
+    cur = (current or "").strip() or "position_1"
+    m = re.match(r"^(.*?)(\d+)$", cur)
+    if m:
+        prefix, n, width = m.group(1), int(m.group(2)), len(m.group(2))
+    else:
+        prefix, n, width = cur + "_", 1, 1
+    existing = set(existing or ())
+    while True:
+        n += 1
+        cand = f"{prefix}{n:0{width}d}"
+        if cand not in existing:
+            return cand
+
+
 class CapturePage(QWidget):
     """Capture a named position via the `capture-position` CLI (subprocess)."""
 
@@ -170,8 +188,62 @@ class CapturePage(QWidget):
         self.imgdir_edit = QLineEdit()
         self.imgdir_edit.setPlaceholderText("(optional) image output directory")
         form.addRow("Image dir", self.imgdir_edit)
-        self.tilt_chk = QCheckBox("Also record tilt (AP_STAGE_AT_T)")
+        self.tilt_chk = QCheckBox("Record tilt (AP_STAGE_AT_T) -- recall restores it")
+        self.tilt_chk.setChecked(True)            # default ON
         form.addRow("", self.tilt_chk)
+        # v0.39.0: an 800x reference beside the 2000x one. Mill batches use it only
+        # when the 2000x refine cannot find the site (then: 800x coarse pass, stage if
+        # allowed, then 2000x). One extra FIB frame at 800x, scan speed 5.
+        self.coarse_chk = QCheckBox("Also capture 800x image (refine fallback)")
+        self.coarse_chk.setChecked(True)          # default ON (Evan, 2026-10-01)
+        self.coarse_chk.setToolTip(
+            "Grabs a second reference at 800x right after the 2000x one. If refine at "
+            "2000x cannot find the site in a mill batch, refine retries with this wider "
+            "800x view (stage move if 'Refine may move stage' is ticked), then 2000x.")
+        form.addRow("", self.coarse_chk)
+
+        # Fiducial BEFORE capture: refine registers the live image against the
+        # reference captured here, so a fiducial must exist before the reference is
+        # taken. Mill it at the CURRENT stage position, at this capture's mag, then
+        # capture -- the capture records which side (and which number) got one.
+        fidw = QWidget(); fl = QHBoxLayout(fidw); fl.setContentsMargins(0, 0, 0, 0)
+        self.fid_kind = QComboBox(); self.fid_kind.addItems(["number", "square"])
+        self.fid_kind.setToolTip("number: loop-free numbered fiducial 1-30 (elynumbers), "
+                                 "written through elymaker; square: the prototype .ely")
+        fl.addWidget(self.fid_kind)
+        self.fid_side = QComboBox(); self.fid_side.addItems(["left", "right"])
+        fl.addWidget(self.fid_side)
+        fl.addWidget(QLabel("#"))
+        self.fid_number = QSpinBox(); self.fid_number.setRange(1, 30); self.fid_number.setValue(1)
+        self.fid_number.setToolTip("Counts up automatically after each capture that "
+                                   "records a numbered fiducial.")
+        fl.addWidget(self.fid_number)
+        self.fid_here_btn = QPushButton("Mill fiducial here")
+        self.fid_here_btn.clicked.connect(self._on_mill_fiducial_here)
+        fl.addWidget(self.fid_here_btn)
+        fl.addStretch(1)
+        form.addRow("Fiducial", fidw)
+        recw = QWidget(); rl = QHBoxLayout(recw); rl.setContentsMargins(0, 0, 0, 0)
+        self.fid_record = QComboBox(); self.fid_record.addItems(["none", "left", "right"])
+        rl.addWidget(self.fid_record)
+        self.fid_record_lbl = QLabel("")
+        self.fid_record_lbl.setStyleSheet("color:#9aa3b2;")
+        rl.addWidget(self.fid_record_lbl)
+        rl.addStretch(1)
+        form.addRow("Record on capture", recw)
+        for sig in (self.fid_record.currentTextChanged, self.fid_kind.currentTextChanged):
+            sig.connect(self._update_record_label)
+        self.fid_number.valueChanged.connect(self._update_record_label)
+        self.fid_kind.currentTextChanged.connect(
+            lambda k: self.fid_number.setEnabled(k == "number"))
+        hint = QLabel("Mill the fiducial BEFORE capturing so the reference image "
+                      "contains it (refine needs that). 'Record on capture' is set "
+                      "automatically after you mill one and cleared after the capture. "
+                      "After each successful ARMED capture the name and the fiducial "
+                      "number count up.")
+        hint.setWordWrap(True); hint.setStyleSheet("color:#9aa3b2;")
+        form.addRow("", hint)
+        self._update_record_label()
         lay.addLayout(form)
 
         row = QHBoxLayout()
@@ -183,11 +255,108 @@ class CapturePage(QWidget):
         lay.addLayout(row)
         lay.addStretch(1)
 
+    # ---------------------------------------------------------------- helpers
+    def _load_db(self):
+        pf = self._win.positions_file()
+        if not pf or not Path(pf).exists():
+            return None
+        try:
+            from ..positions import PositionDatabase
+            return PositionDatabase.load(Path(pf))
+        except Exception:
+            return None
+
+    def _existing_names(self) -> set:
+        db = self._load_db()
+        return set(db.positions) if db is not None else set()
+
+    def _update_record_label(self, *_):
+        side = self.fid_record.currentText()
+        if side == "none":
+            self.fid_record_lbl.setText("(no fiducial will be recorded)")
+        elif self.fid_kind.currentText() == "number":
+            self.fid_record_lbl.setText(f"records #{self.fid_number.value()} on the {side}")
+        else:
+            self.fid_record_lbl.setText(f"records the {side} square")
+
+    def refresh_suggestions(self) -> None:
+        """Avoid collisions with the session: bump the name if it is already used, and
+        the fiducial number if that number is already recorded."""
+        db = self._load_db()
+        if db is None:
+            return
+        names = set(db.positions)
+        cur = self.name_edit.text().strip() or "position_1"
+        if cur in names:
+            self.name_edit.setText(next_position_name(cur, names))
+        used = {r.fiducial_number for r in db.positions.values()
+                if getattr(r, "fiducial_number", None)}
+        if used and self.fid_number.value() in used:
+            self.fid_number.setValue(min(max(used) + 1, self.fid_number.maximum()))
+
+    def showEvent(self, ev):  # noqa: N802 (Qt)
+        self.refresh_suggestions()
+        super().showEvent(ev)
+
+    def _fiducial_file(self, side: str):
+        """(path, label) for the selected fiducial, or (None, error message)."""
+        from ..fiducial import fiducial_ely_path, fiducial_available, number_fiducial_path
+        if self.fid_kind.currentText() == "number":
+            pf = self._win.positions_file()
+            if not pf:
+                return None, ("Set a positions file first (top bar): numbered fiducials "
+                              "are written into the session folder.")
+            n = self.fid_number.value()
+            try:
+                return number_fiducial_path(Path(pf).parent, n, side), f"#{n} ({side})"
+            except Exception as e:  # noqa: BLE001
+                return None, f"Could not write numbered fiducial #{n}: {e}"
+        if not fiducial_available(side):
+            return None, (f"No {side} fiducial pattern found. Drop it in as "
+                          f"{fiducial_ely_path(side)}")
+        return fiducial_ely_path(side), f"{side} square"
+
+    # --------------------------------------------------------------- actions
+    def _on_mill_fiducial_here(self) -> None:
+        """Mill the selected fiducial (numbered or square) at the CURRENT stage position
+        (no recall), at this capture's magnification, via `run --fib-mag`. Sets 'Record
+        on capture' so the following Capture records it."""
+        side = self.fid_side.currentText()
+        try:
+            mag = float(self.mag_edit.text().strip() or "2000")
+        except ValueError:
+            self._win.status("FIB magnification must be a number.")
+            return
+        path, label = self._fiducial_file(side)
+        if path is None:
+            self._win.status(label)
+            return
+        from ..fiducial import fiducial_fit
+        fits, _margin, detail = fiducial_fit(side, mag, path=path)
+        if not fits and not self._win.confirm(
+                "WARNING: fiducial {} will NOT fit in the field of view at {:.0f}x ({}). "
+                "It would be clipped or not milled. Mill anyway?".format(label, mag, detail)):
+            return
+        armed = self._win.is_armed()
+        if armed and not self._win.confirm(
+                "Mill fiducial {} at the CURRENT stage position at {:.0f}x? (Capture the "
+                "position afterwards so the reference includes it.)".format(label, mag)):
+            return
+        args = ["run", str(path), "--fib-mag", f"{mag:g}"]
+        if armed:
+            args.append("--arm")
+        self.fid_record.setCurrentText(side)   # the next Capture records it
+        self._win.run_cli(args)
+
     def _on_capture(self) -> None:
         name = self.name_edit.text().strip() or "position_1"
         pos_file = self._win.positions_file()
         if not pos_file:
             self._win.status("Set a positions file first (top bar).")
+            return
+        existing = self._existing_names()
+        if name in existing and not self._win.confirm(
+                f"'{name}' already exists in this session. Re-capture it (overwrite)?"):
             return
         args = ["capture-position", name, "--positions-file", pos_file,
                 "--fib-mag", self.mag_edit.text().strip() or "2000",
@@ -199,11 +368,39 @@ class CapturePage(QWidget):
             # Group BMPs beside the session's positions.json (<session>/images).
             from .session import images_dir_for
             args += ["--image-dir", str(images_dir_for(pos_file))]
-        if self.tilt_chk.isChecked():
-            args += ["--include-tilt"]
-        if self._win.is_armed():
+        args += ["--include-tilt"] if self.tilt_chk.isChecked() else ["--no-include-tilt"]
+        if self.coarse_chk.isChecked():
+            args += ["--coarse-mag", "800"]
+        rec_side = self.fid_record.currentText()
+        fid_n = None
+        if rec_side in ("left", "right"):
+            args += ["--fiducial-side", rec_side]
+            if self.fid_kind.currentText() == "number":
+                fid_n = self.fid_number.value()
+                args += ["--fiducial-number", str(fid_n)]
+        armed = self._win.is_armed()
+        if armed:
             args += ["--arm"]
-        self._win.run_cli(args)
+
+        def _done(rc, _armed=armed, _name=name, _n=fid_n, _existing=existing):
+            # Only a SUCCESSFUL, ARMED capture advances the counters (a dry run or a
+            # failure captured nothing).
+            if rc == 0 and _armed:
+                self._advance_after_capture(_name, _n, set(_existing) | {_name})
+        self._win.run_cli(args, on_done=_done)
+
+    def _advance_after_capture(self, name: str, fid_n, existing: set) -> None:
+        nxt = next_position_name(name, existing)
+        self.name_edit.setText(nxt)
+        msg = f"Captured {name}; next: {nxt}"
+        if fid_n is not None:
+            if fid_n < self.fid_number.maximum():
+                self.fid_number.setValue(fid_n + 1)
+                msg += f", fiducial #{fid_n + 1}"
+            else:
+                msg += f" (fiducial numbers 1-{self.fid_number.maximum()} used up)"
+        self.fid_record.setCurrentText("none")   # never carry a fiducial to the next one
+        self._win.status(msg)
 
 
 class ElymakerTab(QWidget):
@@ -525,36 +722,76 @@ class SetupPage(QWidget):
 class MillPage(QWidget):
     """Milling queue: per-position select / autofocus / refine, then `mill-positions`.
 
+    v0.50.0 (Evan, 2026-10-07): one class, three tabs -- Rough Mill, Prepolish and Polish
+    (``title`` / ``stage``).
+
+    v0.51.0 milling stages (mill_stages.py): every tab runs `mill-positions --stage S`.
+      * Rough Mill: the standard pattern (a position's authored pattern overrides it);
+        refine aligns to the capture image.
+      * Prepolish / Polish: their OWN pattern at every position (authored rough patterns
+        are never milled); refine aligns to the latest Rough Mill / Prepolish after image.
+        Checked positions without that image are listed and need an OK before the batch
+        (they are not milled).
+      * After-mill image ON by default, named <name>_<n>-<stage>_<time>.bmp and recorded
+        in positions.json; the "Align to" / "After image" columns show them.
+      * Manual, for the selected position: Go to · Align · Push pattern · Record after
+        image (`site ...`). Push loads + prepares the pattern in SmartFIB WITHOUT starting
+        it. These keep this tab on screen (output also goes to the Log page).
+
     Reuses PositionDatabase for the queue rows. Assembles the mill-positions argv from
     the checked rows + options, gating --arm on the shared ARM toggle, and updates a
     live per-position status column by parsing the streamed CLI output.
     """
 
-    C_MILL, C_AF, C_REFINE, C_NAME, C_STATUS, C_MAG, C_OBJ = range(7)
-    HEADERS = ["Mill", "AF", "Refine", "Position", "Status", "Mag (x)", "Obj (V)"]
+    (C_MILL, C_AF, C_REFINE, C_NAME, C_STATUS, C_REF, C_AFTER, C_MAG,
+     C_OBJ) = range(9)
+    HEADERS = ["Mill", "AF", "Refine", "Position", "Status", "Align to", "After image",
+               "Mag (x)", "Obj (V)"]
+    MANUAL_ACTIONS = (("goto", "Go to"), ("align", "Align"), ("push", "Push pattern"),
+                      ("after-image", "Record after image"))
 
-    def __init__(self, window):
+    def __init__(self, window, title: str = "Rough Mill", stage: str = "rough"):
         super().__init__()
+        from ..mill_stages import (FORCED_PATTERN_STAGES, PREVIOUS_STAGE, STAGE_LABEL,
+                                   default_stage_pattern, stage_tag)
         self._win = window
         self._db = None
         self._row_by_name = {}
+        self.title = title
+        self.stage = stage
+        self._forced = stage in FORCED_PATTERN_STAGES
+        self._prev = PREVIOUS_STAGE[stage]
+        self._label = STAGE_LABEL[stage]
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(16, 16, 16, 16)
-        lay.addWidget(_title("Mill"))
+        lay.addWidget(_title(title))
 
         # pattern (.ely) picker
         prow = QHBoxLayout()
-        prow.addWidget(QLabel("Standard pattern (.ely):"))
+        prow.addWidget(QLabel("Standard pattern (.ely):" if not self._forced
+                              else f"{self._label} pattern (.ely):"))
         self.ely_edit = QLineEdit()
-        self.ely_edit.setPlaceholderText("path to pattern .ely")
+        self.ely_edit.setPlaceholderText(
+            "path to pattern .ely" if not self._forced else
+            f"path to the {self._label.lower()} .ely (no default installed yet)")
+        dflt = default_stage_pattern(stage) if self._forced else None
+        if dflt is not None:
+            self.ely_edit.setText(str(dflt))
         prow.addWidget(self.ely_edit, 1)
         b = QPushButton("Browse…")
         b.clicked.connect(self._browse_ely)
         prow.addWidget(b)
         lay.addLayout(prow)
-        hint = QLabel("Positions with an authored pattern mill that instead of the "
-                      "standard one.")
+        if self._forced:
+            prev = STAGE_LABEL[self._prev]
+            hint = QLabel(f"Every position mills this pattern (authored rough patterns are not "
+                          f"used). Refine aligns to the position's latest {prev} after image; "
+                          f"positions without one are listed before starting and not milled.")
+        else:
+            hint = QLabel("Positions with an authored pattern mill that instead of the "
+                          "standard one. Refine aligns to the capture image.")
+        hint.setWordWrap(True)
         hint.setStyleSheet("color:#9aa3b2;")
         lay.addWidget(hint)
 
@@ -566,7 +803,9 @@ class MillPage(QWidget):
         orow.addWidget(self.wait_combo)
         orow.addWidget(QLabel("Move:"))
         self.move_combo = QComboBox()
-        self.move_combo.addItems(["ap_goto", "movestage", "none"])
+        # movestage first = default (v0.38.0): ap_goto ignored a 14 um recall on the
+        # instrument (2026-10-01); MoveStage moved it.
+        self.move_combo.addItems(["movestage", "ap_goto", "none"])
         orow.addWidget(self.move_combo)
         orow.addWidget(QLabel("Imaging scan rate:"))
         self.scan_spin = QSpinBox(); self.scan_spin.setRange(-1, 15)
@@ -576,17 +815,63 @@ class MillPage(QWidget):
         orow.addWidget(self.continue_chk)
         orow.addStretch(1)
         lay.addLayout(orow)
+        # Refine stage correction: opt-in (default OFF).
+        rrow = QHBoxLayout()
+        self.refine_stage_chk = QCheckBox("Refine may move stage (X/Y, ≤ 100 µm)")
+        self.refine_stage_chk.setToolTip(
+            "When a site's drift exceeds the 10 um beam-shift window, refine makes ONE "
+            "X/Y stage move (<= 100 um), undone unless the drift halves, then finishes "
+            "with beam shift. Only at R = 12 and tilt -1..31 deg; refuses otherwise.")
+        # v0.39.0: default ON in the UI (validated 2026-10-01; Evan). The CLI keeps the
+        # explicit --refine-enable-stage opt-in.
+        self.refine_stage_chk.setChecked(True)
+        rrow.addWidget(self.refine_stage_chk)
+        self.refine_skip_chk = QCheckBox("Skip site if refine fails")
+        self.refine_skip_chk.setToolTip(
+            "Do not mill a site whose refine failed (with 'Continue on error' the batch "
+            "moves on to the next site; without it the batch stops). Default: mill at "
+            "the recalled position.")
+        if self._forced:
+            # v0.51.0 review: off by the rough refine correction a prepolish/polish pattern
+            # could cut the lamella, so a failed refine never mills here (batch enforces it).
+            self.refine_skip_chk.setChecked(True)
+            self.refine_skip_chk.setEnabled(False)
+            self.refine_skip_chk.setToolTip(
+                f"Always on in {self._label}: a site whose refine failed is never milled "
+                f"(with 'Continue on error' the batch moves on; without it, it stops).")
+        rrow.addWidget(self.refine_skip_chk)
+        # v0.41.0 after-mill image; v0.51.0: ON by default (the next stage aligns to it).
+        self.after_chk = QCheckBox("After-mill image")
+        self.after_chk.setChecked(True)
+        self.after_chk.setToolTip(
+            f"After milling each site, grab ONE fresh FIB frame at its capture "
+            f"magnification, before the beam shift is reset, as images/<position>_"
+            f"{stage_tag(stage)}_<time>.bmp, and record it in positions.json"
+            + ("; Prepolish aligns to it" if stage == "rough" else
+               "; Polish aligns to it" if stage == "prepolish" else "")
+            + ". Skipped with a warning if SmartSEM still indicates milling. Adds one frame "
+              "of ion dose per site.")
+        rrow.addWidget(self.after_chk)
+        rrow.addStretch(1)
+        lay.addLayout(rrow)
 
-        # select helpers
+        # select helpers: explicit per-column All / None (no state-dependent toggles,
+        # which inverted mixed columns -- "Toggle all" unchecked Mill and checked
+        # AF/Refine because they started in different states).
         srow = QHBoxLayout()
         self.refresh_btn = QPushButton("Load / Refresh")
         self.refresh_btn.clicked.connect(self.reload)
         srow.addWidget(self.refresh_btn)
-        for label, col in (("all", None), ("autofocus", self.C_AF),
-                           ("refine", self.C_REFINE)):
-            btn = QPushButton(f"Toggle {label}")
-            btn.clicked.connect(lambda _=False, c=col: self._toggle_col(c))
-            srow.addWidget(btn)
+        for label, col in (("Mill", self.C_MILL), ("Autofocus", self.C_AF),
+                           ("Refine", self.C_REFINE)):
+            srow.addSpacing(8)
+            srow.addWidget(QLabel(f"{label}:"))
+            b_all = QPushButton("All")
+            b_all.clicked.connect(lambda _=False, c=col: self._set_col(c, True))
+            b_none = QPushButton("None")
+            b_none.clicked.connect(lambda _=False, c=col: self._set_col(c, False))
+            srow.addWidget(b_all)
+            srow.addWidget(b_none)
         srow.addStretch(1)
         lay.addLayout(srow)
 
@@ -596,11 +881,52 @@ class MillPage(QWidget):
         self.table.verticalHeader().setDefaultSectionSize(32)
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         for c in (self.C_MILL, self.C_AF, self.C_REFINE):
             self.table.horizontalHeader().setSectionResizeMode(
                 c, QHeaderView.ResizeToContents)
+        self.table.itemSelectionChanged.connect(self._on_select)
         lay.addWidget(self.table, 1)
+
+        # manual, one position at a time (v0.51.0)
+        mbox = _card()
+        ml = QVBoxLayout(mbox)
+        ml.setContentsMargins(12, 10, 12, 10)
+        mrow = QHBoxLayout()
+        self.sel_label = QLabel("Selected position: —")
+        self.sel_label.setStyleSheet("font-weight:600;")
+        mrow.addWidget(self.sel_label)
+        mrow.addSpacing(12)
+        self.manual_btns = {}
+        for act, text in self.MANUAL_ACTIONS:
+            btn = QPushButton(text)
+            btn.clicked.connect(lambda _=False, a=act: self._on_manual(a))
+            mrow.addWidget(btn)
+            self.manual_btns[act] = btn
+        mrow.addStretch(1)
+        ml.addLayout(mrow)
+        self.manual_status = QLabel(
+            "Manual: Go to → Align → Push pattern (milling is NOT started; start it in "
+            "SmartFIB) → Record after image.")
+        self.manual_status.setWordWrap(True)
+        self.manual_status.setStyleSheet("color:#9aa3b2;")
+        ml.addWidget(self.manual_status)
+        self.manual_btns["goto"].setToolTip(
+            "Zero the FIB beam shift, move the stage to this position (MoveStage, recorded "
+            "tilt), set its objective voltage and FIB magnification.")
+        self.manual_btns["align"].setToolTip(
+            "Refine to " + ("the capture image" if self._prev is None else
+                            f"the latest {STAGE_LABEL[self._prev]} after image")
+            + ". The beam-shift correction stays on for milling.")
+        self.manual_btns["push"].setToolTip(
+            "Load + prepare this stage's pattern in SmartFIB (drop folder, LOAD_ELY, "
+            "PREPARE_EXPOSURE). Milling is NOT started.")
+        self.manual_btns["after-image"].setToolTip(
+            f"Grab one FIB frame at the capture magnification as images/<position>_"
+            f"{stage_tag(stage)}_<time>.bmp and record it (positions.json + a run log).")
+        lay.addWidget(mbox)
 
         # start
         brow = QHBoxLayout()
@@ -624,6 +950,10 @@ class MillPage(QWidget):
         it.setCheckState(Qt.Checked if checked else Qt.Unchecked)
         return it
 
+    def _session_dir(self) -> Optional[Path]:
+        pf = self._win.positions_file()
+        return Path(pf).parent if pf else None
+
     def reload(self) -> None:
         pos_file = self._win.positions_file()
         if not pos_file:
@@ -636,29 +966,96 @@ class MillPage(QWidget):
             self._win.status(f"Could not load positions: {exc}")
             self.table.setRowCount(0)
             return
+        # Keep the operator's ticks for rows that were already listed (v0.51.0: switching
+        # tabs no longer resets them).
+        keep = {}
+        for n, r in self._row_by_name.items():
+            if r < self.table.rowCount() and self.table.item(r, self.C_NAME) is not None \
+                    and self.table.item(r, self.C_NAME).text() == n:
+                keep[n] = tuple(self.table.item(r, c).checkState() == Qt.Checked
+                                for c in (self.C_MILL, self.C_AF, self.C_REFINE))
+        selected = self.selected_name()
         names = sorted(self._db.positions.keys())
         self._row_by_name = {n: i for i, n in enumerate(names)}
         self.table.setRowCount(len(names))
         for r, name in enumerate(names):
             rec = self._db.positions[name]
-            self.table.setItem(r, self.C_MILL, self._mk_check(True))
-            self.table.setItem(r, self.C_AF, self._mk_check(False))
-            self.table.setItem(r, self.C_REFINE, self._mk_check(False))
+            mill, af, rf = keep.get(name, (True, False, self._forced))
+            self.table.setItem(r, self.C_MILL, self._mk_check(mill))
+            self.table.setItem(r, self.C_AF, self._mk_check(af))
+            self.table.setItem(r, self.C_REFINE, self._mk_check(rf))
             self.table.setItem(r, self.C_NAME, QTableWidgetItem(name))
             self.table.setItem(r, self.C_STATUS, QTableWidgetItem(""))
+            self.table.setItem(r, self.C_REF, QTableWidgetItem(""))
+            self.table.setItem(r, self.C_AFTER, QTableWidgetItem(""))
             self.table.setItem(r, self.C_MAG,
                                QTableWidgetItem(f"{rec.fib_magnification_x:.0f}"))
             self.table.setItem(r, self.C_OBJ,
                                QTableWidgetItem(f"{rec.fib_objective_potential_v:.1f}"))
+        self._fill_stage_columns()
+        if selected in self._row_by_name:
+            self.table.selectRow(self._row_by_name[selected])
         self._win.status(f"Queue: {len(names)} position(s).")
 
-    def _toggle_col(self, col) -> None:
-        cols = (self.C_MILL, self.C_AF, self.C_REFINE) if col is None else (col,)
+    def refresh_stage_columns(self) -> None:
+        """Re-read positions.json and update only the Align to / After image columns
+        (after a manual step or a batch); the ticks are left alone."""
+        pos_file = self._win.positions_file()
+        if not pos_file:
+            return
+        try:
+            from ..positions import PositionDatabase
+            self._db = PositionDatabase.load(Path(pos_file))
+        except Exception:  # noqa: BLE001
+            return
+        self._fill_stage_columns()
+
+    def _fill_stage_columns(self) -> None:
+        from qtpy.QtGui import QColor
+        from ..mill_stages import latest_after_image, reference_for_stage, stamp_of
+        base = self._session_dir()
+        for name, r in self._row_by_name.items():
+            rec = self._db.positions.get(name) if self._db else None
+            if rec is None or self.table.item(r, self.C_REF) is None:
+                continue
+            ref, _desc, why = reference_for_stage(rec, self.stage, base)
+            if ref is None:
+                txt = "missing"
+                tip = why or ""
+            elif self._prev is None:
+                txt, tip = "capture image", ref.name
+            else:
+                when = stamp_of(ref)
+                txt = f"{self._prev} {when[5:16] if when else ref.name}"
+                tip = ref.name
+            it = self.table.item(r, self.C_REF)
+            it.setText(txt)
+            it.setToolTip(tip)
+            it.setForeground(QColor("#e5534b") if ref is None else QColor("#c9d1d9"))
+            aft = latest_after_image(rec, self.stage, base)
+            when = stamp_of(aft) if aft is not None else None
+            it2 = self.table.item(r, self.C_AFTER)
+            it2.setText((when[5:16] if when else aft.name) if aft is not None else "—")
+            it2.setToolTip(aft.name if aft is not None else "")
+
+    def _set_col(self, col, checked: bool) -> None:
+        """Set every row in a column to a fixed state (no inversion).
+
+        For the Autofocus / Refine columns, "All" only checks rows that are selected
+        for milling: autofocus/refine at an un-milled site never runs (the argv
+        builder drops them), so a checkbox there would look on while doing nothing.
+        "None" clears the column regardless.
+        """
         for r in range(self.table.rowCount()):
-            for c in cols:
-                it = self.table.item(r, c)
-                it.setCheckState(Qt.Unchecked if it.checkState() == Qt.Checked
-                                 else Qt.Checked)
+            it = self.table.item(r, col)
+            if it is None:
+                continue
+            if checked and col in (self.C_AF, self.C_REFINE):
+                mill = self.table.item(r, self.C_MILL)
+                if mill is None or mill.checkState() != Qt.Checked:
+                    it.setCheckState(Qt.Unchecked)
+                    continue
+            it.setCheckState(Qt.Checked if checked else Qt.Unchecked)
 
     def _checked_names(self, col) -> list:
         return [self.table.item(r, self.C_NAME).text()
@@ -673,6 +1070,7 @@ class MillPage(QWidget):
         if not pos_file or not ely or not mill_names:
             return None
         args = ["mill-positions", ely, *mill_names, "--positions-file", pos_file,
+                "--stage", self.stage,
                 "--wait", self.wait_combo.currentText(),
                 "--move-method", self.move_combo.currentText(),
                 "--imaging-scan-rate", str(self.scan_spin.value())]
@@ -682,13 +1080,33 @@ class MillPage(QWidget):
             args += ["--autofocus", ",".join(af)]
         if rf:
             args += ["--refine", ",".join(rf)]
+        if rf and self.refine_stage_chk.isChecked():
+            args += ["--refine-enable-stage"]
+        if rf and self.refine_skip_chk.isChecked():
+            args += ["--refine-abort-on-fail"]
         if self.continue_chk.isChecked():
             args += ["--continue-on-error"]
+        if not self.after_chk.isChecked():
+            args += ["--no-after-image"]           # --stage turns it on by default
         if self._win.is_armed():
             args += ["--arm"]
         return args
 
+    def missing_references(self, names) -> dict:
+        """{name: reason} for the positions without this stage's reference (Prepolish:
+        Rough Mill after image; Polish: Prepolish after image). Rough: always {}."""
+        if self._prev is None:
+            return {}
+        try:
+            from ..mill_stages import plan_stage
+            from ..positions import PositionDatabase
+            db = PositionDatabase.load(Path(self._win.positions_file()))
+            return dict(plan_stage(db, names, self.stage, self._session_dir()).missing)
+        except Exception as exc:  # noqa: BLE001
+            return {n: f"could not check ({exc})" for n in names}
+
     def _on_start(self) -> None:
+        from ..mill_stages import STAGE_LABEL
         args = self.build_argv()
         if args is None:
             self._win.status("Need a positions file, a pattern, and at least one "
@@ -696,7 +1114,84 @@ class MillPage(QWidget):
             return
         for r in range(self.table.rowCount()):
             self.table.item(r, self.C_STATUS).setText("")
-        self._win.run_cli(args, on_line=self._on_mill_line)
+        # v0.51.0: positions without the previous stage's after image are listed first and
+        # need an OK; they are not milled (the run is told with --accept-reference-skips).
+        mill_names = self._checked_names(self.C_MILL)
+        missing = self.missing_references(mill_names)
+        if missing:
+            prev = STAGE_LABEL[self._prev]
+            for n in missing:
+                self._set_status(n, f"Skipped (no {prev.lower()} image)")
+            rest = [n for n in mill_names if n not in missing]
+            if not rest:
+                self._win.status(f"No checked position has a {prev} after image; nothing to "
+                                 f"{self._label.lower()}.")
+                return
+            if "--arm" in args and not self._win.confirm(
+                    f"These positions have no {prev} after image to align to and will NOT be "
+                    f"{self._label.lower()}ed:\n\n  " + "\n  ".join(missing)
+                    + f"\n\n{self._label} the other {len(rest)} position(s)?"):
+                for n in missing:
+                    self._set_status(n, "")
+                self._win.status("Not started; nothing moved.")
+                return
+            args = args + ["--accept-reference-skips", ",".join(missing)]
+        refined = set(self._checked_names(self.C_REFINE))
+        unrefined = [n for n in mill_names if n not in missing and n not in refined]
+        if self._forced and unrefined and "--arm" in args and not self._win.confirm(
+                f"These positions are not ticked for Refine and will be "
+                f"{self._label.lower()}ed WITHOUT refine:\n\n  " + "\n  ".join(unrefined)
+                + f"\n\nThe pattern then lands at the recalled stage position with zero beam "
+                  f"shift, not on the {STAGE_LABEL[self._prev]} milling. Continue?"):
+            self._win.status("Not started; nothing moved.")
+            return
+        if "--arm" not in args or self.move_combo.currentText() == "none":
+            self._win.run_cli(args, on_line=self._on_mill_line,
+                              on_done=lambda rc: self.refresh_stage_columns())
+            return
+        # v0.46.0 batch tilt limit: a read-only --tilt-check first (no --arm), then an OK
+        # for any position that will NOT be milled, then the armed run with exactly that
+        # list in --accept-tilt-skips (the run refuses if anything else is out of range).
+        self._tilt = None
+        check = [a for a in args if a != "--arm"] + ["--tilt-check"]
+        self._win.run_cli(check, on_line=self._on_tilt_line,
+                          on_done=lambda rc, a=list(args): self._after_tilt_check(rc, a))
+
+    def _on_tilt_line(self, line: str) -> None:
+        from ..tilt_guard import parse_machine_line
+        got = parse_machine_line(line)
+        if got is not None:
+            self._tilt = got
+
+    def _after_tilt_check(self, rc: int, args: list) -> None:
+        from ..tilt_guard import BATCH_TILT_LIMIT_DEG
+        t = getattr(self, "_tilt", None)
+        if rc != 0 or t is None:
+            self._win.status("Tilt check failed (see Log); nothing moved.")
+            return
+        excluded, allowed = t["excluded"], t["allowed"]
+        for n in excluded:
+            self._set_status(n, "Skipped (tilt)")
+        if not allowed:
+            self._win.status(f"No checked position is within {BATCH_TILT_LIMIT_DEG:g}° of "
+                             f"the current tilt ({t['live']:.2f}°); nothing to mill.")
+            return
+        if excluded:
+            if not self._win.confirm(
+                    f"The stage is at {t['live']:.2f}°. These positions are more than "
+                    f"{BATCH_TILT_LIMIT_DEG:g}° from it (or from the previous site) and will "
+                    f"NOT be milled:\n\n  " + "\n  ".join(excluded)
+                    + f"\n\nMill the other {len(allowed)} position(s)?"):
+                for n in excluded:
+                    self._set_status(n, "")
+                self._win.status("Not started; nothing moved.")
+                return
+            args = args + ["--accept-tilt-skips", ",".join(excluded)]
+        w = getattr(self._win, "_worker", None)
+        if w is not None and hasattr(w, "wait"):
+            w.wait(5000)                     # the check's thread is finishing; let it end
+        self._win.run_cli(args, on_line=self._on_mill_line,
+                          on_done=lambda rc: self.refresh_stage_columns())
 
     def _set_status(self, name: str, text: str) -> None:
         r = self._row_by_name.get(name)
@@ -708,6 +1203,7 @@ class MillPage(QWidget):
         import re
         s = line.strip()
         for pat, label in ((r"Completed milling at\s+(\S+)", "Done"),
+                           (r"\[stage\] NOT milling\s+(\S+)", "Skipped (no image)"),
                            (r"Milling at\s+(\S+)", "Milling…"),
                            (r"Autofocus at\s+(\S+)", "Autofocus…"),
                            (r"Refine at\s+(\S+)", "Refine…"),
@@ -717,12 +1213,104 @@ class MillPage(QWidget):
                 self._set_status(m.group(1).rstrip(":,"), label)
                 return
 
+    # ------------------------------------------------------------ manual (v0.51.0)
+    def selected_name(self) -> Optional[str]:
+        rows = {i.row() for i in self.table.selectedItems()}
+        if len(rows) != 1:
+            return None
+        it = self.table.item(rows.pop(), self.C_NAME)
+        return it.text() if it is not None else None
+
+    def _on_select(self) -> None:
+        n = self.selected_name()
+        self.sel_label.setText(f"Selected position: {n or '—'}")
+
+    def site_argv(self, action: str):
+        """argv for `site <action> <selected>` (or None, with a status message)."""
+        name = self.selected_name()
+        pos_file = self._win.positions_file()
+        if not pos_file or not name:
+            self._win.status("Select one position in the table first.")
+            return None
+        args = ["site", action, name, "--stage", self.stage, "--positions-file", pos_file]
+        if action == "goto":
+            args += ["--move-method", self.move_combo.currentText()]
+        elif action == "align":
+            args += ["--imaging-scan-rate", str(self.scan_spin.value())]
+            if self.refine_stage_chk.isChecked():
+                args += ["--refine-enable-stage"]
+        elif action == "push":
+            ely = self.ely_edit.text().strip()
+            if not ely:
+                self._win.status(f"Choose the {'standard' if not self._forced else self._label.lower()} "
+                                 f"pattern first.")
+                return None
+            args += ["--ely", ely]
+        if self._win.is_armed():
+            args += ["--arm"]
+        return args
+
+    def _manual_question(self, action: str, name: str) -> str:
+        from ..mill_stages import reference_for_stage, resolve_stage_pattern
+        rec = self._db.positions.get(name) if self._db else None
+        if action == "goto":
+            t = getattr(getattr(rec, "stage_at", None), "t_deg", None)
+            return (f"Move the stage to {name}"
+                    + (f" (recorded tilt {t:.2f}°)" if t is not None else "")
+                    + "?\n\nThe FIB beam shift is zeroed first; then the objective voltage and "
+                      "FIB magnification are set.")
+        if action == "align":
+            ref = reference_for_stage(rec, self.stage, self._session_dir())[0] if rec else None
+            return (f"Align {name} to {ref.name if ref else 'its reference'}?\n\nFIB frames are "
+                    f"taken; the beam-shift correction stays on for milling.")
+        if action == "push":
+            try:
+                path = resolve_stage_pattern(rec, self.stage, self.ely_edit.text().strip(),
+                                             self._session_dir())[0]
+                pname = Path(path).name
+            except Exception:  # noqa: BLE001
+                pname = Path(self.ely_edit.text().strip()).name
+            return (f"Load {pname} into SmartFIB for {name}?\n\nMilling will NOT start: "
+                    f"check it and start it in SmartFIB.")
+        return (f"Grab the {self._label} after image of {name}?\n\nOne FIB frame at the "
+                f"capture magnification; recorded in positions.json and the run log.")
+
+    def _on_manual(self, action: str) -> None:
+        args = self.site_argv(action)
+        if args is None:
+            return
+        name = args[2]
+        if "--arm" in args and not self._win.confirm(self._manual_question(action, name)):
+            self._win.status("Cancelled; nothing changed.")
+            return
+        label = dict(self.MANUAL_ACTIONS)[action]
+        self.manual_status.setText(f"{label} {name}…" + ("" if "--arm" in args else
+                                                          " (dry run: plan in the Log)"))
+        self._win.run_cli(args, on_line=self._on_manual_line,
+                          on_done=lambda rc, a=action, n=name: self._after_manual(rc, a, n),
+                          show_log=False)
+
+    def _on_manual_line(self, line: str) -> None:
+        s = line.strip()
+        if s.startswith(("SITE-DONE", "[site]", "***", "[goto]", "[align]", "[push]",
+                         "[after-image]", "[PUSH]", "[DRY RUN]")):
+            self.manual_status.setText(s)
+
+    def _after_manual(self, rc: int, action: str, name: str) -> None:
+        label = dict(self.MANUAL_ACTIONS)[action]
+        if rc == 0:
+            self._win.status(f"{label} {name}: done.")
+        else:
+            self._win.status(f"{label} {name}: exit {rc} (see Log).")
+        if action == "after-image":
+            self.refresh_stage_columns()
+
 
 class PositionsPage(QWidget):
     """Browse saved positions (in-process JSON read) with a BMP preview."""
 
     COLS = ["Name", "Mag (x)", "Obj (V)", "X (mm)", "Y (mm)", "Z (mm)",
-            "px (nm)", "FOV w (µm)", "ELY"]
+            "px (nm)", "FOV w (µm)", "ELY", "Fid"]
 
     def __init__(self, window):
         super().__init__()
@@ -745,6 +1333,19 @@ class PositionsPage(QWidget):
         self.link_btn = QPushButton("Refresh patterns")
         self.link_btn.clicked.connect(self._on_refresh_patterns)
         row.addWidget(self.link_btn)
+        # Fiducial: mill a reference mark left/right of the image at the selected
+        # position (its own .ely per side; ARM-gated + confirmed).
+        row.addSpacing(12)
+        row.addWidget(QLabel("Fiducial:"))
+        self.fid_side = QComboBox(); self.fid_side.addItems(["left", "right"])
+        row.addWidget(self.fid_side)
+        self.fid_af_chk = QCheckBox("autofocus")
+        self.fid_rf_chk = QCheckBox("refine")
+        row.addWidget(self.fid_af_chk); row.addWidget(self.fid_rf_chk)
+        self.fid_btn = QPushButton("Mill fiducial")
+        self.fid_btn.setObjectName("toolButton")
+        self.fid_btn.clicked.connect(self._on_mill_fiducial)
+        row.addWidget(self.fid_btn)
         self.count_lbl = QLabel("")
         self.count_lbl.setStyleSheet("color: palette(mid);")
         row.addWidget(self.count_lbl)
@@ -801,7 +1402,10 @@ class PositionsPage(QWidget):
             vals = [name, f"{rec.fib_magnification_x:.0f}",
                     f"{rec.fib_objective_potential_v:.1f}",
                     _mm(st.x_m), _mm(st.y_m), _mm(st.z_m),
-                    px_nm, fov_um, "yes" if rec.ely_pattern else "—"]
+                    px_nm, fov_um, "yes" if rec.ely_pattern else "—",
+                    ((f"{rec.fiducial_side} #{rec.fiducial_number}"
+                      if getattr(rec, "fiducial_number", None) else rec.fiducial_side)
+                     or "—")]
             for c, v in enumerate(vals):
                 self.table.setItem(r, c, QTableWidgetItem(v))
         self.count_lbl.setText(f"{len(names)} position(s)")
@@ -837,6 +1441,56 @@ class PositionsPage(QWidget):
         self._win.status(f"ELYMaker: authoring for '{name}'. Save/Send there, then "
                          f"'Refresh patterns' here to link it.")
 
+    def _on_mill_fiducial(self) -> None:
+        """Mill the left/right fiducial .ely at the selected position via the standard
+        mill path (recall -> arrival wait -> [autofocus] -> [refine] -> mill), forcing
+        the fiducial pattern (never the position's authored lamella pattern) and
+        recording fiducial_side on success."""
+        pf = self._win.positions_file()
+        if not pf or self._db is None:
+            self._win.status("Load a positions file first.")
+            return
+        name = self._selected_name()
+        if not name:
+            self._win.status("Select a position to mill a fiducial at.")
+            return
+        side = self.fid_side.currentText()
+        from ..fiducial import fiducial_ely_path, fiducial_available
+        if not fiducial_available(side):
+            self._win.status(f"No {side} fiducial pattern found. Drop it in as "
+                             f"{fiducial_ely_path(side)}")
+            return
+        # Will the fiducial fit in the FOV at this position's mag? (The prototype
+        # fiducials reach ~28 um from centre; the FOV half-width at 2000x is ~28.6 um,
+        # so any higher mag clips them.)
+        from ..fiducial import fiducial_fit
+        rec = self._db.positions.get(name)
+        fits, margin, detail = fiducial_fit(side, rec.fib_magnification_x)
+        if not fits:
+            if not self._win.confirm(
+                    "WARNING: the {} fiducial will NOT fit in the field of view at this "
+                    "position's magnification ({}). It would be clipped or not milled. "
+                    "Mill anyway?".format(side, detail)):
+                return
+        armed = self._win.is_armed()
+        if armed and not self._win.confirm(
+                "Mill a {} fiducial at '{}'? This moves the stage to the position and "
+                "mills the fiducial pattern (not the lamella pattern).\n\nNOTE: this "
+                "position's reference image was captured WITHOUT the fiducial, so "
+                "refine will NOT see it. Re-capture the position afterwards (Capture "
+                "tab, same name, overwrite) to update the reference. To avoid this, "
+                "mill the fiducial BEFORE capturing (Capture tab).".format(side, name)):
+            return
+        args = ["mill-positions", str(fiducial_ely_path(side)), name,
+                "--positions-file", pf, "--force-pattern", "--record-fiducial", side]
+        if self.fid_af_chk.isChecked():
+            args += ["--autofocus", name]
+        if self.fid_rf_chk.isChecked():
+            args += ["--refine", name]
+        if armed:
+            args.append("--arm")
+        self._win.run_cli(args)
+
     def _on_refresh_patterns(self) -> None:
         self._link_patterns(quiet=False)
         self.reload()  # redraw the ELY column
@@ -847,6 +1501,10 @@ class PositionsPage(QWidget):
             return
         try:
             from ..ely_link import link_patterns_to_positions
+            from ..positions import PositionDatabase
+            # v0.51.0: link on a FRESH copy -- a batch may have recorded after images in
+            # positions.json since this page loaded it; saving the old copy would drop them.
+            self._db = PositionDatabase.load(Path(pf))
             summary = link_patterns_to_positions(self._db, pf)
         except Exception as exc:  # noqa: BLE001
             if not quiet:

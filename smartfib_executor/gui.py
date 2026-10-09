@@ -596,7 +596,7 @@ class SmartFIBExecutorUI(tk.Tk):
         self.var_capture_mag = tk.StringVar(value="2000")
 
         self.var_continue_on_error = tk.BooleanVar(value=False)
-        self.var_move_method = tk.StringVar(value="ap_goto")
+        self.var_move_method = tk.StringVar(value="movestage")
         self.var_stage_timeout = tk.StringVar(value="120")
 
         # Milling queue UI state
@@ -1351,7 +1351,7 @@ class SmartFIBExecutorUI(tk.Tk):
         ttk.Combobox(
             r1,
             textvariable=self.var_move_method,
-            values=["ap_goto", "movestage", "none"],
+            values=["movestage", "ap_goto", "none"],
             width=12,
             state="readonly",
         ).grid(row=0, column=3, padx=(6, 18), sticky="w")
@@ -1768,7 +1768,7 @@ class SmartFIBExecutorUI(tk.Tk):
             messagebox.showerror("Bad stage timeout", "Stage timeout must be a number (seconds).")
             return
 
-        move_method = self.var_move_method.get().strip() or "ap_goto"
+        move_method = self.var_move_method.get().strip() or "movestage"
 
         cmd = [
             sys.executable,

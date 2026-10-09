@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no" ?>
+<ELAYOUT version="2.0" locked="false" name="Right_fiducial">
+
+  <VERSION created="17.09.2026 11:10:57" modified="17.09.2026 11:13:21" number="1.0"/>
+
+  <AXES show="true"/>
+
+  <GRID horizontal="1" show="true" snap_to="false" vertical="1"/>
+
+  <LAYER_LIST>
+    <LAYER fill_color="#00FF00" fill_opacity="0.5" hidden="false" locked="false" name="Layer">
+        </LAYER>
+  </LAYER_LIST>
+
+  <STRUCTURE_LIST>
+    <STRUCTURE locked="false" name="Structure">
+      <VERSION created="17.09.2026 11:10:57" modified="17.09.2026 11:10:57" number="1.0"/>
+      <INSTANCE_LIST/>
+      <LAYER_REFERENCE frame_cx="0" frame_cy="0" frame_size="76.2993" ref="Layer">
+        <RECT outline="true" dose_factor="5" z_extent="5e-006 m" edge_sel_auto_scan_angle="true" height="-14" width="14" angle="0 deg" x="14.0978" y="6.78645" imaging="false">
+          <EXPOSURE version="2.1" file="D:\FIB Recipes\Vitriuos_Ice.epm">
+          <PROBE name="30kV:300pA" type="specific" current="3e-010 A" diameter="1.75e-007 m"/>
+          </EXPOSURE>
+            </RECT>
+        <TEXT dose_factor="8" z_extent="8e-006 m" height="6" text="X" font="sans serif" angle="0 deg" x="18.7479" y="-2.70471">
+          <EXPOSURE version="2.1" file="D:\FIB Recipes\Vitriuos_Ice.epm">
+          <PROBE name="30kV:300pA" type="specific" current="3e-010 A" diameter="1.75e-007 m"/>
+          </EXPOSURE>
+            </TEXT>
+        <TEXT outline="true" dose_factor="8" z_extent="8e-006 m" height="2.5" text="pyFIB" font="sans serif" angle="0 deg" x="17.1696" y="3.7929">
+          <EXPOSURE version="2.1" file="D:\FIB Recipes\Vitriuos_Ice.epm">
+          <PROBE name="30kV:300pA" type="specific" current="3e-010 A" diameter="1.75e-007 m"/>
+          </EXPOSURE>
+            </TEXT>
+        <TEXT outline="true" dose_factor="8" z_extent="8e-006 m" height="2.5" text="pyFIB" font="sans serif" angle="0 deg" x="17.1696" y="-5.7621">
+          <EXPOSURE version="2.1" file="D:\FIB Recipes\Vitriuos_Ice.epm">
+          <PROBE name="30kV:300pA" type="specific" current="3e-010 A" diameter="1.75e-007 m"/>
+          </EXPOSURE>
+            </TEXT>
+      </LAYER_REFERENCE>
+    </STRUCTURE>
+  </STRUCTURE_LIST>
+
+</ELAYOUT>
